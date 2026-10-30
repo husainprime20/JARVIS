@@ -1,0 +1,145 @@
+name: Build Windows EXE
+
+# Manual, no-secrets build of the Windows desktop installer.
+#
+# Unlike desktop.yml this workflow never publishes a release, never signs
+# anything and never touches the updater manifest, so it runs unchanged on a
+# fork (including a fork without the upstream repository's secrets).
+#
+# Output: an artifact named `openjarvis-windows-exe` containing
+#   - OpenJarvis_<version>_x64-setup.exe  (NSIS installer)
+#   - openjarvis-desktop.exe              (portable, run-in-place executable)
+#
+# Trigger:
+#   Actions -> Build Windows EXE -> Run workflow
+# or:
+#   gh workflow run build-windows-exe.yml --ref main
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Installer version (SemVer, e.g. 1.0.2). Leave empty to use the
+          version in frontend/src-tauri/tauri.conf.json.
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: build-windows-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows x64 installer
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # frontend/.npmrc sets engine-strict=true and package.json requires
+      # npm >=11.19 <12, so the runner's bundled npm is not enough.
+      - name: Use the reviewed npm toolchain
+        run: npm install --global npm@11.19.0
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            frontend/src-tauri -> target
+            rust -> target
+
+      # The app bundles Ollama as a Tauri sidecar. The script extracts only
+      # ollama.exe for x64; Ollama downloads its model runtime on first run,
+      # which keeps the installer around 17 MB instead of bundling ~1 GB.
+      - name: Download Ollama sidecar
+        shell: bash
+        working-directory: frontend/src-tauri/scripts
+        run: |
+          chmod +x download-ollama.sh
+          ./download-ollama.sh x86_64-pc-windows-msvc
+
+      # tauri.conf.json intentionally does not declare the sidecar (release
+      # builds layer their own config on top). Generate a minimal override:
+      # bundle Ollama, but do not create updater artifacts, which would
+      # require TAURI_SIGNING_PRIVATE_KEY.
+      - name: Write unsigned build config
+        shell: bash
+        env:
+          EXE_VERSION: ${{ inputs.version }}
+        run: |
+          node <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs');
+
+          const source = JSON.parse(
+            readFileSync('frontend/src-tauri/tauri.conf.json', 'utf8'),
+          );
+          const config = {
+            version: process.env.EXE_VERSION || source.version,
+            bundle: {
+              externalBin: ['binaries/ollama'],
+              createUpdaterArtifacts: false,
+            },
+          };
+
+          if (!/^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$/.test(config.version)) {
+            throw new Error(
+              `Installer version must be SemVer (got ${JSON.stringify(config.version)})`,
+            );
+          }
+
+          writeFileSync(
+            'frontend/src-tauri/tauri.windows-exe.conf.json',
+            JSON.stringify(config, null, 2),
+          );
+          console.log(`Building OpenJarvis ${config.version} (NSIS, unsigned)`);
+          NODE
+
+      - name: Build NSIS installer
+        working-directory: frontend
+        run: >-
+          npx tauri build
+          --target x86_64-pc-windows-msvc
+          --bundles nsis
+          --config src-tauri/tauri.windows-exe.conf.json
+
+      - name: Verify build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir=frontend/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
+          ls -lh "$bundle_dir"
+          ls -lh frontend/src-tauri/target/x86_64-pc-windows-msvc/release/openjarvis-desktop.exe
+          test -n "$(find "$bundle_dir" -maxdepth 1 -name '*.exe' -print -quit)"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: openjarvis-windows-exe
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            frontend/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            frontend/src-tauri/target/x86_64-pc-windows-msvc/release/openjarvis-desktop.exe
