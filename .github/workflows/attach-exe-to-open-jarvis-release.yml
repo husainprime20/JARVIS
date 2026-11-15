@@ -1,0 +1,61 @@
+name: Attach Windows EXE to the Open Jarvis release (one-off)
+
+# One-off: copies the installer built by "Build Windows EXE" run 43742871509
+# (commit da28f5c, the commit the `openjarvis` tag points at) into the
+# "Open Jarvis" release, so it outlives the 14-day artifact retention.
+# Runs only for a push to this session branch that touches this file; the
+# file is deleted again once the upload is confirmed.
+
+on:
+  push:
+    branches: [arena/eb0e44f5-jarvis]
+    paths:
+      - ".github/workflows/attach-exe-to-open-jarvis-release.yml"
+
+permissions:
+  contents: write # upload the release asset
+  actions: read # download another run's artifact
+
+jobs:
+  attach:
+    name: Attach installer to release openjarvis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: "43742871509"
+      TAG: openjarvis
+    steps:
+      - name: Download the installer from run 43742871509
+        run: gh run download "$RUN_ID" --name openjarvis-windows-exe --dir installer
+
+      - name: Check the installer
+        run: |
+          set -euo pipefail
+          ls -l installer
+          mapfile -t exes < <(find installer -maxdepth 1 -name '*.exe')
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one .exe, found ${#exes[@]}"
+            exit 1
+          fi
+          exe="${exes[0]}"
+          file "$exe" | tee /dev/stderr | grep -q 'PE32'
+          size=$(stat -c %s "$exe")
+          if (( size < 20000000 )); then
+            echo "::error::$exe is only $size bytes"
+            exit 1
+          fi
+          {
+            echo "### $(basename "$exe")"
+            echo "- size: $size bytes"
+            echo "- sha256: \`$(sha256sum "$exe" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to the release
+        run: gh release upload "$TAG" installer/*.exe --clobber
+
+      - name: Show the release assets
+        run: >-
+          gh release view "$TAG" --json assets
+          --jq '.assets[] | "\(.name) \(.size) bytes \(.url)"'
