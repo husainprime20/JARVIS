@@ -338,27 +338,32 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
     # ``engine.generate()``) both make blocking upstream calls; run them in a
     # worker thread so a slow/wedged non-streaming request can't stall the
     # event loop and every other concurrent request with it.
-    if use_server_agent:
-        response = await asyncio.to_thread(
-            _handle_agent,
-            agent,
-            model,
-            request_body,
-            complexity_info,
-            trace_store=getattr(request.app.state, "trace_store", None),
-            bus=getattr(request.app.state, "bus", None),
-        )
-    else:
-        bus = getattr(request.app.state, "bus", None)
-        response = await asyncio.to_thread(
-            _handle_direct,
-            engine,
-            model,
-            request_body,
-            bus=bus,
-            complexity_info=complexity_info,
-            app_config=config,
-        )
+    try:
+        if use_server_agent:
+            response = await asyncio.to_thread(
+                _handle_agent,
+                agent,
+                model,
+                request_body,
+                complexity_info,
+                trace_store=getattr(request.app.state, "trace_store", None),
+                bus=getattr(request.app.state, "bus", None),
+            )
+        else:
+            bus = getattr(request.app.state, "bus", None)
+            response = await asyncio.to_thread(
+                _handle_direct,
+                engine,
+                model,
+                request_body,
+                bus=bus,
+                complexity_info=complexity_info,
+                app_config=config,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _completion_failed(exc) from exc
 
     # Hand the completed exchange to the background memory service.
     _remember_exchange(
@@ -454,6 +459,26 @@ def _uses_direct_cloud_router(engine: Any, model: str) -> bool:
     from openjarvis.server.cloud_router import is_cloud_model
 
     return is_cloud_model(model) and _engine_key_for_model(engine, model) != "litellm"
+
+
+def _completion_failed(exc: Exception) -> HTTPException:
+    """Report a failed non-streaming completion as a JSON error.
+
+    Left unhandled, the exception becomes Starlette's plain-text 500, which
+    ``ServerErrorMiddleware`` sends from outside every other middleware,
+    including CORS. A cross-origin client such as the desktop app's webview
+    then cannot read the reply at all and sees only "Failed to fetch", so the
+    real cause (for example Ollama lacking the memory to load the model) is
+    lost. An ``HTTPException`` is answered inside the middleware stack, with
+    CORS headers, carrying the same message the streaming path already sends.
+    """
+    from openjarvis.engine._base import EngineConnectionError
+
+    logging.getLogger("openjarvis.server").error(
+        "Chat completion failed: %s", exc, exc_info=True
+    )
+    status = 503 if isinstance(exc, EngineConnectionError) else 500
+    return HTTPException(status_code=status, detail=str(exc) or type(exc).__name__)
 
 
 def _handle_direct(

@@ -44,7 +44,10 @@ workflow is manual and needs **no repository secrets**. It:
    `scripts/desktop/smoke_jarvis_backend.py`. This installs it exactly as the
    app will, imports the speech, voice and cloud SDKs, calls the PC tools, and
    holds a scripted JARVIS conversation through `jarvis serve` (time zone, a
-   saved memory, opening Notepad);
+   saved memory, opening Notepad). The requests come from the app's webview
+   origin and must get CORS headers. The stand-in Ollama only has the free
+   memory of a busy 8 GB PC, so the server must shrink the model's context, and
+   a crashing model must reach the app as a readable error;
 4. bundles uv and Ollama, builds the NSIS installer, and checks the
    installer's contents.
 
@@ -138,7 +141,7 @@ later builds are incremental.
 
     ```json
     {
-      "version": "1.0.1",
+      "version": "1.0.2",
       "bundle": {
         "externalBin": ["binaries/ollama", "binaries/uv"],
         "resources": { "jarvis-backend/": "src/" },
