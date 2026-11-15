@@ -164,8 +164,12 @@ def test_transcribe_caps_prompt_and_ignores_unknown_vad_values():
 
 
 def test_transcribe_omits_hints_for_backends_without_them(client, mock_speech_backend):
+    # Capture the result first: on Python 3.12+ a wrapping mock's return_value
+    # is the DEFAULT sentinel, not the original mock's result.
+    result = mock_speech_backend.transcribe.return_value
+
     def plain_transcribe(audio, *, format="wav", language=None):
-        return mock_speech_backend.transcribe.return_value
+        return result
 
     mock_speech_backend.transcribe = MagicMock(wraps=plain_transcribe)
     # MagicMock(wraps=...) hides the signature; restore it like a real method.

@@ -123,6 +123,9 @@ voice = [
 jarvis = [
     "openjarvis[desktop,voice,inference-google,inference-cloud]",
     "tzdata>=2024.1; sys_platform == 'win32'",
+    # Kokoro's English pronunciation (misaki) installs spaCy's en_core_web_sm
+    # model with `python -m pip` on first use, and uv environments have no pip.
+    "pip>=24",
 ]
 openhands = ["openhands-sdk>=1.0; python_version >= '3.12'"]
 # Apple Foundation Models (on-device AFM 3). Needs an Apple Silicon Mac on

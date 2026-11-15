@@ -105,6 +105,27 @@ def greeting(honorific: str = "sir", now: Optional[datetime] = None) -> str:
     return f"{part}{title}. JARVIS online and at your service."
 
 
+def tolerate_narrow_output_encoding(streams: Optional[List[Any]] = None) -> None:
+    """Replace characters the output encoding lacks instead of crashing.
+
+    In a console, Windows Python writes Unicode directly. Redirected output
+    (a pipe or a file) uses the ANSI code page instead, e.g. cp1252, which
+    cannot encode the symbols JARVIS prints (✓, ◉, ━); printing them would
+    raise UnicodeEncodeError and stop the assistant.
+    """
+    for stream in streams if streams is not None else [sys.stdout, sys.stderr]:
+        encoding = (getattr(stream, "encoding", None) or "").lower()
+        if encoding.replace("-", "").replace("_", "") in ("utf8", "utf8sig"):
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError) as exc:
+            logger.debug("Could not relax the encoding of %r: %s", stream, exc)
+
+
 def _transcribe(
     backend: Any, audio: bytes, *, language: Optional[str], prompt: str
 ) -> str:
@@ -434,6 +455,7 @@ def listen(
     from openjarvis.core.config import load_config
     from openjarvis.core.credentials import inject_credentials
 
+    tolerate_narrow_output_encoding()
     console = Console()
     inject_credentials()
     load_saved_cloud_keys()

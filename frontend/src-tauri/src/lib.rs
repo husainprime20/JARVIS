@@ -8,12 +8,26 @@ use tokio::sync::Mutex;
 
 const OLLAMA_PORT: u16 = 11434;
 const JARVIS_PORT: u16 = 8000;
+// The `jarvis` extra is everything JARVIS mode uses: speech recognition and
+// the server (desktop), the Kokoro British voice (voice) and the Gemini,
+// OpenAI and Anthropic SDKs.
 #[cfg(not(all(target_os = "windows", target_arch = "aarch64")))]
-const DESKTOP_UV_SYNC_COMMAND: &str =
-    "uv sync --extra desktop --extra inference-cloud --extra inference-google --group desktop-native";
+const DESKTOP_UV_SYNC_COMMAND: &str = "uv sync --extra jarvis --group desktop-native";
 #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
 const DESKTOP_UV_SYNC_COMMAND: &str =
-    "uv sync --python cpython-3.12-windows-x86_64-none --extra desktop --extra inference-cloud --extra inference-google --group desktop-native";
+    "uv sync --python cpython-3.12-windows-x86_64-none --extra jarvis --group desktop-native";
+
+/// The agent the desktop app serves: JARVIS, with its PC-control, memory and
+/// voice tools.
+const DESKTOP_AGENT: &str = "jarvis";
+
+/// Repository cloned on first launch when no backend is installed beside the
+/// app (the Windows installer bundles one in `<install dir>/src`). Builds of
+/// a fork point this at the fork so the backend matches the app.
+const BACKEND_REPO_URL: &str = match option_env!("OPENJARVIS_BACKEND_REPO") {
+    Some(url) => url,
+    None => "https://github.com/open-jarvis/OpenJarvis.git",
+};
 
 /// Small, fast model used when startup needs a default Ollama tag.
 const STARTUP_MODEL: &str = "qwen3.5:4b";
@@ -133,18 +147,23 @@ fn boot_plan(cfg: &InferenceConfig, ram_gb: f64) -> BootPlan {
                 .model
                 .clone()
                 .unwrap_or_else(|| default_local_model(ram_gb).to_string());
+            // Without a pinned model JARVIS picks its own brain: a cloud key
+            // saved in Settings (Gemini, OpenAI, ...), else the best local
+            // Ollama model, which is still pulled here as the offline brain.
+            let mut serve_args: Vec<String> = Vec::new();
+            if cfg.model.is_some() {
+                serve_args.push("--engine".to_string());
+                serve_args.push("ollama".to_string());
+                serve_args.push("--model".to_string());
+                serve_args.push(model.clone());
+            }
+            serve_args.push("--agent".to_string());
+            serve_args.push(DESKTOP_AGENT.to_string());
             BootPlan {
                 launch_ollama: true,
-                model_to_pull: Some(model.clone()),
+                model_to_pull: Some(model),
                 engine_host: None,
-                serve_args: vec![
-                    "--engine".into(),
-                    "ollama".into(),
-                    "--model".into(),
-                    model,
-                    "--agent".into(),
-                    "simple".into(),
-                ],
+                serve_args,
             }
         }
         SourceKind::Custom => {
@@ -174,7 +193,7 @@ fn boot_plan(cfg: &InferenceConfig, ram_gb: f64) -> BootPlan {
                     "--model".into(),
                     model,
                     "--agent".into(),
-                    "simple".into(),
+                    DESKTOP_AGENT.into(),
                 ],
             }
         }
@@ -188,10 +207,35 @@ fn home_dir() -> String {
         .unwrap_or_default()
 }
 
+/// Path of a sidecar binary installed beside the desktop executable, if any.
+fn bundled_sidecar(name: &str) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let file_name = if cfg!(target_os = "windows") {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    let path = exe.parent()?.join(file_name);
+    if path.is_file() {
+        Some(path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
 /// Resolve full path to a binary by checking common locations.
 /// macOS .app bundles don't inherit the shell PATH, so we probe manually.
 fn resolve_bin(name: &str) -> String {
     let home = home_dir();
+
+    // The JARVIS installer bundles uv beside the desktop executable, so first
+    // launch needs no separate install. Prefer it: it is the uv version the
+    // bundled backend's lockfile was produced with.
+    if name == "uv" {
+        if let Some(bundled) = bundled_sidecar(name) {
+            return bundled;
+        }
+    }
 
     // Tauri installs the Windows ARM64 sidecar beside the desktop executable.
     // Prefer the bundled runtime over an unrelated Ollama install on PATH.
@@ -912,14 +956,17 @@ fn rust_toolchain_install_hint() -> &'static str {
      Build Tools with the C++ workload, then relaunch."
 }
 
+/// Environment for the Python backend processes.
+///
+/// UTF-8 mode makes Python use UTF-8 for stdio and files. Without it, Windows
+/// uses the ANSI code page (e.g. cp1252) for the piped output, which cannot
+/// encode many symbols the backend prints and logs.
+///
 /// Windows ARM64 runs the current Python dependency stack under x64 emulation:
 /// the locked numpy/pyarrow and speech wheels do not support win_arm64.
 /// The Tauri shell and bundled Ollama remain native ARM64 processes.
-#[cfg_attr(
-    not(all(target_os = "windows", target_arch = "aarch64")),
-    allow(unused_variables)
-)]
 fn prepare_backend_python(cmd: &mut tokio::process::Command) {
+    cmd.env("PYTHONUTF8", "1");
     #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
     {
         cmd.env("UV_PYTHON", "cpython-3.12-windows-x86_64-none");
@@ -1321,7 +1368,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                 "clone",
                 "--depth",
                 "1",
-                "https://github.com/open-jarvis/OpenJarvis.git",
+                BACKEND_REPO_URL,
                 &clone_target,
             ])
             .stdout(std::process::Stdio::null())
@@ -1339,8 +1386,9 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                     let mut s = status.lock().await;
                     s.error = Some(format!(
                         "Failed to download OpenJarvis: {}. \
-                         Clone manually: git clone https://github.com/open-jarvis/OpenJarvis.git {}",
+                         Clone manually: git clone {} {}",
                         stderr.trim(),
+                        BACKEND_REPO_URL,
                         clone_target,
                     ));
                     return;
@@ -1349,8 +1397,8 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                     let mut s = status.lock().await;
                     s.error = Some(format!(
                         "Failed to download OpenJarvis: {}. \
-                         Clone manually: git clone https://github.com/open-jarvis/OpenJarvis.git {}",
-                        e, clone_target,
+                         Clone manually: git clone {} {}",
+                        e, BACKEND_REPO_URL, clone_target,
                     ));
                     return;
                 }
@@ -1500,11 +1548,16 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
 
     let root = project_root.as_ref().unwrap();
 
-    let cargo_bin = resolve_bin("cargo");
-    if !std::path::Path::new(&cargo_bin).exists() && cargo_bin == "cargo" {
-        let mut s = status.lock().await;
-        s.error = Some(format_missing_rust_toolchain());
-        return;
+    // A backend bundled by the JARVIS installer ships a prebuilt
+    // `openjarvis_rust` wheel instead of the Rust sources, so there is nothing
+    // to compile: no Rust or Visual Studio Build Tools needed.
+    if root.join("rust").is_dir() {
+        let cargo_bin = resolve_bin("cargo");
+        if !std::path::Path::new(&cargo_bin).exists() && cargo_bin == "cargo" {
+            let mut s = status.lock().await;
+            s.error = Some(format_missing_rust_toolchain());
+            return;
+        }
     }
 
     // Install dependencies automatically (handles fresh clones).
@@ -1523,18 +1576,17 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
     // boot so users don't restart the app thinking it's stuck.
     {
         let mut s = status.lock().await;
-        s.detail = "Installing dependencies (uv sync — may take 1-2 min on first boot)...".into();
+        s.detail = "Installing JARVIS: speech, voice and AI packages \
+                    (uv sync, first launch can take several minutes)..."
+            .into();
     }
     let mut sync_cmd = tokio::process::Command::new(&uv_bin);
     sync_cmd
         .args([
             "sync",
+            // See DESKTOP_UV_SYNC_COMMAND for what the `jarvis` extra holds.
             "--extra",
-            "desktop",
-            "--extra",
-            "inference-cloud",
-            "--extra",
-            "inference-google",
+            "jarvis",
             // openjarvis_rust lives in a uv dependency group (not the published
             // `desktop` extra) so pip installs from PyPI don't require it (#584).
             "--group",
@@ -1589,16 +1641,13 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
     ];
     serve_argv.extend(plan.serve_args.iter().cloned());
     // If the Ollama pull fell back to a different tag than planned, serve the
-    // tag that is actually present. boot_plan always emits `--model` followed
-    // immediately by its value, so `i + 1` is in bounds.
+    // tag that is actually present. Only a pinned model is passed as
+    // `--model <value>`; otherwise JARVIS picks the best installed model.
     if let Some(m) = &serve_model_override {
-        match serve_argv.iter().position(|a| a == "--model") {
-            Some(i) if i + 1 < serve_argv.len() => serve_argv[i + 1] = m.clone(),
-            _ => eprintln!(
-                "Warning: resolved model {:?} could not be applied; \
-                 '--model <value>' not found in serve args {:?}",
-                m, serve_argv
-            ),
+        if let Some(i) = serve_argv.iter().position(|a| a == "--model") {
+            if i + 1 < serve_argv.len() {
+                serve_argv[i + 1] = m.clone();
+            }
         }
     }
     cmd.args(&serve_argv)
@@ -3897,14 +3946,9 @@ mod tests {
         assert!(plan.launch_ollama);
         assert_eq!(plan.model_to_pull.as_deref(), Some("qwen3.5:4b"));
         assert!(plan.engine_host.is_none());
-        assert!(plan
-            .serve_args
-            .windows(2)
-            .any(|w| w == ["--engine", "ollama"]));
-        assert!(plan
-            .serve_args
-            .windows(2)
-            .any(|w| w == ["--model", "qwen3.5:4b"]));
+        // No pinned model: JARVIS chooses its brain (a saved cloud key, else
+        // the pulled local model), so neither engine nor model is forced.
+        assert_eq!(plan.serve_args, vec!["--agent".to_string(), "jarvis".to_string()]);
     }
 
     #[test]
@@ -3916,6 +3960,18 @@ mod tests {
         };
         let plan = boot_plan(&cfg, 16.0);
         assert_eq!(plan.model_to_pull.as_deref(), Some("qwen3.5:9b"));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--engine", "ollama"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--model", "qwen3.5:9b"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--agent", "jarvis"]));
     }
 
     #[test]
@@ -3942,6 +3998,10 @@ mod tests {
             .serve_args
             .windows(2)
             .any(|w| w == ["--model", "qwen2.5-7b"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--agent", "jarvis"]));
     }
 
     #[test]

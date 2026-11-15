@@ -352,3 +352,22 @@ def test_listen_is_a_registered_command():
     from openjarvis.cli import cli
 
     assert "listen" in cli.commands
+
+
+def test_narrow_output_encoding_replaces_symbols_instead_of_crashing():
+    import io
+
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252")  # redirected Windows output
+    listen_cmd.tolerate_narrow_output_encoding([stream])
+    stream.write("✓ ready ◉ Listening")
+    stream.flush()
+    assert raw.getvalue() == b"? ready ? Listening"
+
+
+def test_utf8_output_is_left_alone():
+    import io
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    listen_cmd.tolerate_narrow_output_encoding([stream])
+    assert stream.errors == "strict"

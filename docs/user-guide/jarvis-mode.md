@@ -15,6 +15,28 @@ finds, and you can switch at any time.
     Linux work too: every command is the same, and the PC tools use `open`
     and `xdg-open` there.
 
+## The easy way: the Windows app
+
+The Windows installer contains everything: the app with the HUD, the JARVIS
+backend, and the tools to set it up. You don't need Python, Git or Rust.
+
+1. Download `OpenJarvis_<version>_x64-setup.exe` from the repository's
+   **Releases** page, or from a
+   [Build Windows EXE](../development/build-windows-exe.md) run.
+2. Run it. The installer is not code-signed, so if Windows SmartScreen says
+   "Windows protected your PC", choose **More info** → **Run anyway**.
+3. Open **OpenJarvis** and keep the local AI option. The first launch installs
+   JARVIS's speech, voice and AI packages and downloads a local model, so it
+   takes a while (it needs internet). Later launches start quickly.
+4. Optional, for a smarter brain: in **Settings**, paste a free Google Gemini
+   key from <https://aistudio.google.com/api-keys> into the **Google** field,
+   then restart the app.
+5. Click **JARVIS** in the sidebar, press **Activate**, allow the microphone,
+   and say "Jarvis, what time is it?"
+
+The rest of this page sets JARVIS up from a source checkout, which also gives
+you `jarvis listen`, the voice assistant in a terminal.
+
 ## Quickstart
 
 ### 1. Install OpenJarvis from source
