@@ -261,9 +261,11 @@ def backend_env(home: Path, *, utf8: bool = True) -> dict[str, str]:
     env.pop("VIRTUAL_ENV", None)
     if utf8:
         env["PYTHONUTF8"] = "1"  # what the desktop app sets for the backend
-    else:
-        env.pop("PYTHONUTF8", None)
         env.pop("PYTHONIOENCODING", None)
+    else:
+        # Redirected output on a Windows PC with a Western code page.
+        env.pop("PYTHONUTF8", None)
+        env["PYTHONIOENCODING"] = "cp1252"
     return env
 
 
@@ -304,7 +306,7 @@ def check_imports(python: list[str], root: Path, env: dict[str, str]) -> None:
 
 
 def check_listen(python: list[str], root: Path, home: Path) -> None:
-    # Redirected output without UTF-8 mode: the narrow code page path.
+    # Redirected output in a narrow code page must not crash the CLI.
     env = backend_env(home, utf8=False)
     result = run(
         [*python, "-m", "openjarvis.cli", "listen", "--check"],
@@ -513,6 +515,11 @@ def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # This script relays output that may contain symbols (✓, ✗) the console's
+    # code page lacks; never crash on printing them.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--backend", type=Path, help="staged backend to copy and sync")
