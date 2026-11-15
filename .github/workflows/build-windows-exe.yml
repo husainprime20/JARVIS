@@ -25,8 +25,21 @@ name: Build Windows EXE
 #   Actions -> Build Windows EXE -> Run workflow
 # or:
 #   gh workflow run build-windows-exe.yml --ref main -f publish_release=true
+# Pull requests that touch the app, the backend or this build also run it
+# (without publishing), so a change that breaks the installer shows up there.
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-windows-exe.yml"
+      - "scripts/desktop/**"
+      - "scripts/build-exe.ps1"
+      - "frontend/**"
+      - "src/openjarvis/**"
+      - "rust/**"
+      - "pyproject.toml"
+      - "uv.lock"
   workflow_dispatch:
     inputs:
       version:

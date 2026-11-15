@@ -62,6 +62,10 @@ To run it:
 4. Download the `openjarvis-windows-exe` artifact from the finished run, or the
    installer from the pre-release.
 
+Pull requests that change the app, the backend or the build run the same
+workflow automatically (without publishing), so the installer for a PR is
+available as an artifact on its checks page.
+
 From the CLI:
 
 ```bash
