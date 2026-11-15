@@ -104,6 +104,90 @@ def test_transcribe_no_file(client):
     assert response.status_code == 400 or response.status_code == 422
 
 
+class _WhisperLikeBackend:
+    """Speech backend whose transcribe() accepts a prompt and VAD flag."""
+
+    backend_id = "whisper-like"
+
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(
+        self, audio, *, format="wav", language=None, prompt=None, vad_filter=False
+    ):
+        self.calls.append(
+            {"format": format, "prompt": prompt, "vad_filter": vad_filter}
+        )
+        return TranscriptionResult(text="Jarvis, what time is it?", language="en")
+
+    def health(self):
+        return True
+
+    def supported_formats(self):
+        return ["wav"]
+
+
+def _whisper_like_client(backend):
+    from fastapi import FastAPI
+
+    from openjarvis.server.api_routes import speech_router
+
+    app = FastAPI()
+    app.state.speech_backend = backend
+    app.include_router(speech_router)
+    return TestClient(app)
+
+
+def test_transcribe_passes_prompt_and_vad_when_supported():
+    backend = _WhisperLikeBackend()
+    client = _whisper_like_client(backend)
+    response = client.post(
+        "/v1/speech/transcribe",
+        files={"file": ("utterance.wav", b"RIFF", "audio/wav")},
+        data={"prompt": "  Jarvis.  ", "vad": "1"},
+    )
+    assert response.status_code == 200
+    assert response.json()["text"] == "Jarvis, what time is it?"
+    assert backend.calls == [{"format": "wav", "prompt": "Jarvis.", "vad_filter": True}]
+
+
+def test_transcribe_caps_prompt_and_ignores_unknown_vad_values():
+    backend = _WhisperLikeBackend()
+    client = _whisper_like_client(backend)
+    client.post(
+        "/v1/speech/transcribe",
+        files={"file": ("utterance.wav", b"RIFF", "audio/wav")},
+        data={"prompt": "x" * 500, "vad": "maybe"},
+    )
+    assert len(backend.calls[0]["prompt"]) == 200
+    assert backend.calls[0]["vad_filter"] is False
+
+
+def test_transcribe_omits_hints_for_backends_without_them(client, mock_speech_backend):
+    # Capture the result first: on Python 3.12+ a wrapping mock's return_value
+    # is the DEFAULT sentinel, not the original mock's result.
+    result = mock_speech_backend.transcribe.return_value
+
+    def plain_transcribe(audio, *, format="wav", language=None):
+        return result
+
+    mock_speech_backend.transcribe = MagicMock(wraps=plain_transcribe)
+    # MagicMock(wraps=...) hides the signature; restore it like a real method.
+    import inspect
+
+    mock_speech_backend.transcribe.__signature__ = inspect.signature(plain_transcribe)
+    response = client.post(
+        "/v1/speech/transcribe",
+        files={"file": ("utterance.wav", b"RIFF", "audio/wav")},
+        data={"prompt": "Jarvis.", "vad": "1"},
+    )
+    assert response.status_code == 200
+    assert mock_speech_backend.transcribe.call_args.kwargs == {
+        "format": "wav",
+        "language": None,
+    }
+
+
 def test_health_endpoint(client):
     response = client.get("/v1/speech/health")
     assert response.status_code == 200

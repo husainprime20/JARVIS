@@ -754,3 +754,116 @@
   background: var(--color-accent);
   text-decoration: none;
 }
+/* JARVIS HUD: arc reactor. The ring speed and colour follow the phase set on
+   .jarvis-reactor through data-phase; --jarvis-color is the reactor colour. */
+.jarvis-reactor {
+  --jarvis-color: #22d3ee;
+  --jarvis-spin: 28s;
+  position: relative;
+  color: var(--jarvis-color);
+  transition: color 400ms ease;
+}
+.jarvis-reactor[data-phase='offline'] { --jarvis-color: #64748b; --jarvis-spin: 90s; }
+.jarvis-reactor[data-phase='standby'] { --jarvis-color: #0e9fb8; --jarvis-spin: 40s; }
+.jarvis-reactor[data-phase='listening'] { --jarvis-color: #22d3ee; --jarvis-spin: 24s; }
+.jarvis-reactor[data-phase='hearing'] { --jarvis-color: #67e8f9; --jarvis-spin: 12s; }
+.jarvis-reactor[data-phase='thinking'] { --jarvis-color: #f5a524; --jarvis-spin: 3s; }
+.jarvis-reactor[data-phase='speaking'] { --jarvis-color: #7dd3fc; --jarvis-spin: 8s; }
+
+.jarvis-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: jarvis-spin var(--jarvis-spin) linear infinite;
+}
+.jarvis-ring--reverse { animation-direction: reverse; }
+.jarvis-ring--slow { animation-duration: calc(var(--jarvis-spin) * 2.5); }
+
+.jarvis-core {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 90ms linear;
+}
+.jarvis-reactor[data-phase='speaking'] .jarvis-halo,
+.jarvis-reactor[data-phase='thinking'] .jarvis-halo {
+  animation: jarvis-breathe 1.4s ease-in-out infinite;
+}
+.jarvis-halo {
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0.55;
+}
+.jarvis-glow {
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--jarvis-color) 55%, transparent));
+}
+
+@keyframes jarvis-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes jarvis-breathe {
+  0%, 100% { opacity: 0.4; transform: scale(0.96); }
+  50% { opacity: 0.85; transform: scale(1.04); }
+}
+
+.jarvis-meter {
+  height: 4px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  overflow: hidden;
+}
+.jarvis-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 600ms ease, background-color 600ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-ring,
+  .jarvis-reactor .jarvis-halo {
+    animation: none !important;
+  }
+  .jarvis-core { transition: none; }
+}
+
+.jarvis-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 9999px;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-surface) 80%, transparent);
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  user-select: none;
+  touch-action: none; /* hold-to-talk must not scroll or long-press */
+  transition: color 150ms, border-color 150ms, background 150ms, box-shadow 150ms;
+}
+.jarvis-button:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: color-mix(in srgb, #22d3ee 45%, transparent);
+}
+.jarvis-button[aria-pressed='true'] {
+  color: #22d3ee;
+  border-color: color-mix(in srgb, #22d3ee 60%, transparent);
+  box-shadow: 0 0 14px -4px rgba(34, 211, 238, 0.6);
+}
+.jarvis-button--primary {
+  color: #041014;
+  background: #22d3ee;
+  border-color: #22d3ee;
+}
+.jarvis-button--primary:hover:not(:disabled) {
+  color: #041014;
+  background: #67e8f9;
+}
+.jarvis-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.jarvis-button:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}

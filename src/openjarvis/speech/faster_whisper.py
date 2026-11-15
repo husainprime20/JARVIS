@@ -101,8 +101,15 @@ class FasterWhisperBackend(SpeechBackend):
         *,
         format: str = "wav",
         language: Optional[str] = None,
+        prompt: Optional[str] = None,
+        vad_filter: bool = False,
     ) -> TranscriptionResult:
-        """Transcribe audio bytes using Faster-Whisper."""
+        """Transcribe audio bytes using Faster-Whisper.
+
+        *prompt* is passed as Whisper's ``initial_prompt`` to bias spelling
+        (e.g. the assistant's name); *vad_filter* drops non-speech audio,
+        which stops Whisper inventing words from background noise.
+        """
         try:
             model = self._ensure_model()
 
@@ -116,9 +123,13 @@ class FasterWhisperBackend(SpeechBackend):
                 with tmp:
                     tmp.write(audio)
 
-                kwargs = {}
+                kwargs: dict = {}
                 if language:
                     kwargs["language"] = language
+                if prompt:
+                    kwargs["initial_prompt"] = prompt
+                if vad_filter:
+                    kwargs["vad_filter"] = True
 
                 segments_iter, info = model.transcribe(tmp.name, **kwargs)
                 segments_list = list(segments_iter)

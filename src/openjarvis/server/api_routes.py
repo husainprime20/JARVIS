@@ -990,6 +990,31 @@ async def learning_policy(request: Request):
 speech_router = APIRouter(prefix="/v1/speech", tags=["speech"])
 
 
+_MAX_TRANSCRIBE_PROMPT_CHARS = 200
+
+
+def _optional_transcribe_kwargs(backend: Any, form: Any) -> Dict[str, Any]:
+    """Pass a recognition hint and silence filtering to backends that take them.
+
+    ``prompt`` (e.g. "Jarvis.") biases Whisper toward expected words such as a
+    wake word; ``vad=1`` trims silence, which stops Whisper inventing text on
+    background noise. Backends without these parameters are called as before.
+    """
+    try:
+        params = inspect.signature(backend.transcribe).parameters
+    except (TypeError, ValueError):
+        return {}
+    extra: Dict[str, Any] = {}
+    prompt = form.get("prompt")
+    if isinstance(prompt, str) and prompt.strip() and "prompt" in params:
+        extra["prompt"] = prompt.strip()[:_MAX_TRANSCRIBE_PROMPT_CHARS]
+    vad = form.get("vad")
+    if isinstance(vad, str) and vad.strip().lower() in {"1", "true", "yes"}:
+        if "vad_filter" in params:
+            extra["vad_filter"] = True
+    return extra
+
+
 @speech_router.post("/transcribe")
 async def transcribe_speech(request: Request):
     """Transcribe uploaded audio to text."""
@@ -1009,13 +1034,11 @@ async def transcribe_speech(request: Request):
     filename = getattr(audio_file, "filename", "audio.wav")
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "wav"
 
+    kwargs: Dict[str, Any] = {"format": ext, "language": language or None}
+    kwargs.update(_optional_transcribe_kwargs(backend, form))
+
     try:
-        result = await asyncio.to_thread(
-            backend.transcribe,
-            audio_bytes,
-            format=ext,
-            language=language or None,
-        )
+        result = await asyncio.to_thread(backend.transcribe, audio_bytes, **kwargs)
     except Exception as exc:
         logger.exception("Speech transcription failed")
         raise HTTPException(
@@ -1308,6 +1331,10 @@ def include_all_routes(app) -> None:
     app.include_router(speech_router)
     app.include_router(feedback_router)
     app.include_router(optimize_router)
+
+    from openjarvis.server.jarvis_routes import jarvis_router  # noqa: PLC0415
+
+    app.include_router(jarvis_router)
 
     # Agent Manager routes (if available)
     try:

@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build the OpenJarvis Windows desktop installer (.exe) locally.
+    Build the JARVIS (OpenJarvis) Windows desktop installer (.exe) locally.
 
 .DESCRIPTION
     Produces the same unsigned NSIS installer as the
@@ -9,14 +9,16 @@
 
         frontend/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/OpenJarvis_<version>_x64-setup.exe
 
-    and the portable executable:
+    The installer bundles the Python backend (with a prebuilt openjarvis_rust
+    wheel), uv and Ollama, so the machine it is installed on needs no
+    developer tools: the first launch installs JARVIS's packages by itself.
 
-        frontend/src-tauri/target/x86_64-pc-windows-msvc/release/openjarvis-desktop.exe
-
-    Prerequisites (all free):
+    Prerequisites for building (all free):
       * Windows 10/11 x64
       * Node.js 22.22+ with npm 11.19+  (https://nodejs.org/)
       * Rust 1.89+ with the x86_64-pc-windows-msvc target  (https://rustup.rs/)
+        and Visual Studio Build Tools with the C++ workload
+      * uv  (https://docs.astral.sh/uv/)
       * Git for Windows (recommended; used to fetch the Ollama sidecar)
 
     WebView2 is required at runtime; it ships with Windows 10/11 updates and
@@ -37,6 +39,10 @@
     Skip the Ollama sidecar download (use when
     frontend/src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe exists).
 
+.PARAMETER SmokeTest
+    Before packaging, install the bundled backend the way the app will and
+    hold a scripted JARVIS conversation (downloads about 1 GB of packages).
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\build-exe.ps1
 
@@ -56,7 +62,10 @@ param(
     [switch]$SkipFrontendInstall,
 
     [Parameter()]
-    [switch]$SkipOllama
+    [switch]$SkipOllama,
+
+    [Parameter()]
+    [switch]$SmokeTest
 )
 
 Set-StrictMode -Version Latest
@@ -69,6 +78,8 @@ $TauriDir = Join-Path $Frontend "src-tauri"
 $BinariesDir = Join-Path $TauriDir "binaries"
 $Sidecar = Join-Path $BinariesDir "ollama-$Target.exe"
 $ConfigPath = Join-Path $TauriDir "tauri.windows-exe.conf.json"
+$BackendDir = Join-Path $TauriDir "jarvis-backend"
+$WheelDir = Join-Path $RepoRoot "dist\wheels"
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -107,6 +118,9 @@ Assert-Command "node" "Install Node.js 22.22+ from https://nodejs.org/."
 Assert-Command "npm" "npm ships with Node.js."
 Assert-Command "cargo" "Install Rust 1.89+ from https://rustup.rs/ and restart the shell."
 Assert-Command "rustc" "Install Rust 1.89+ from https://rustup.rs/ and restart the shell."
+$uvHint = 'Install uv: powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"'
+Assert-Command "uv" $uvHint
+Assert-Command "uvx" $uvHint
 
 $nodeVersion = (& node --version).Trim().TrimStart("v")
 if ([version]$nodeVersion -lt [version]"22.22.0") {
@@ -182,6 +196,44 @@ if (-not (Test-Path $Sidecar)) {
     throw "Ollama sidecar is missing: $Sidecar"
 }
 
+# openjarvis_rust is not built for the stable ABI, so the wheel targets one
+# Python version; the staged backend pins the same one.
+Write-Step "Building the openjarvis_rust wheel (Python 3.12)"
+Invoke-Native -FilePath "uv" -Arguments @("python", "install", "3.12") -WorkingDirectory $RepoRoot
+$python = (& uv python find 3.12)
+if ($LASTEXITCODE -ne 0 -or -not $python) {
+    throw "uv could not find Python 3.12."
+}
+if (Test-Path $WheelDir) { Remove-Item -Recurse -Force $WheelDir }
+Invoke-Native -FilePath "uvx" `
+    -Arguments @("--from", "maturin>=1.12.6,<2", "maturin", "build", "--release",
+        "--manifest-path", "rust/crates/openjarvis-python/Cargo.toml",
+        "--interpreter", $python.Trim(), "--out", $WheelDir) `
+    -WorkingDirectory $RepoRoot
+$wheel = Get-ChildItem -Path $WheelDir -Filter "openjarvis_rust-*-cp312-*.whl" | Select-Object -First 1
+if (-not $wheel) {
+    throw "maturin did not produce an openjarvis_rust wheel in $WheelDir."
+}
+
+Write-Step "Staging the bundled JARVIS backend"
+Invoke-Native -FilePath "uv" `
+    -Arguments @("run", "--no-project", "--python", "3.12", "python",
+        "scripts/desktop/stage_jarvis_backend.py", "--wheel", $wheel.FullName, "--out", $BackendDir) `
+    -WorkingDirectory $RepoRoot
+
+if ($SmokeTest) {
+    Write-Step "Smoke-testing the bundled backend"
+    Invoke-Native -FilePath "uv" `
+        -Arguments @("run", "--no-project", "--python", "3.12", "python",
+            "scripts/desktop/smoke_jarvis_backend.py", "--backend", $BackendDir) `
+        -WorkingDirectory $RepoRoot
+}
+
+# The app installs Python and the backend's packages with this uv on first
+# launch, preferring it over any uv on PATH.
+Write-Step "Bundling uv"
+Copy-Item -Path (Get-Command "uv").Source -Destination (Join-Path $BinariesDir "uv-$Target.exe") -Force
+
 Write-Step "Writing unsigned Tauri build config"
 $sourceConfig = Get-Content (Join-Path $TauriDir "tauri.conf.json") -Raw | ConvertFrom-Json
 $effectiveVersion = if ($Version) { $Version } else { $sourceConfig.version }
@@ -192,7 +244,9 @@ if (-not (Test-SemVer $effectiveVersion)) {
 $config = [ordered]@{
     version = $effectiveVersion
     bundle  = [ordered]@{
-        externalBin           = @("binaries/ollama")
+        externalBin            = @("binaries/ollama", "binaries/uv")
+        # Installed as <install dir>\src, the first place the app looks.
+        resources              = [ordered]@{ "jarvis-backend/" = "src/" }
         createUpdaterArtifacts = $false
     }
 }
@@ -201,6 +255,15 @@ $config = [ordered]@{
 $json = $config | ConvertTo-Json -Depth 5
 [System.IO.File]::WriteAllText($ConfigPath, $json, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "Version: $effectiveVersion (bundles: $Bundles)"
+
+# Fallback when no bundled backend is found: clone this repository.
+try {
+    $origin = (& git -C $RepoRoot remote get-url origin).Trim()
+    if ($origin) { $env:OPENJARVIS_BACKEND_REPO = $origin }
+}
+catch {
+    Write-Host "No git remote 'origin'; the app's fallback clone uses the upstream repository."
+}
 
 Write-Step "Building (first build compiles the Rust app and can take 10-20 minutes)"
 Invoke-Native -FilePath "npx" `
@@ -228,12 +291,7 @@ $installers | ForEach-Object {
     Write-Host "  $($_.FullName)  ($sizeMb MB)"
 }
 
-$portable = Join-Path $releaseDir "openjarvis-desktop.exe"
-if (Test-Path $portable) {
-    Write-Host ""
-    Write-Host "Portable executable (run in place; needs the backend on :8000):" -ForegroundColor Green
-    Write-Host "  $portable"
-}
-
 Write-Host ""
-Write-Host "Next: start the backend with 'jarvis serve' (or scripts\quickstart.sh), then launch the app." -ForegroundColor Yellow
+Write-Host "Next: run the installer, then open OpenJarvis. The first launch installs JARVIS's" -ForegroundColor Yellow
+Write-Host "packages and a local AI model (needs internet; can take a while). Open JARVIS in" -ForegroundColor Yellow
+Write-Host "the sidebar for the HUD." -ForegroundColor Yellow

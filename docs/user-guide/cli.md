@@ -451,6 +451,36 @@ jarvis channel status
 
 ---
 
+## `jarvis listen`
+
+Start [JARVIS mode](jarvis-mode.md): a voice assistant that wakes on "Jarvis",
+answers out loud, controls the PC and remembers you. It picks the first
+available brain (Gemini, OpenAI, Anthropic, OpenRouter, then Ollama) unless
+told otherwise.
+
+```bash
+jarvis listen                  # Voice mode with the wake word
+jarvis listen --text           # Type instead of talking
+jarvis listen --brain ollama   # Run fully offline
+jarvis listen --check          # Show which brains and voice features are ready
+```
+
+| Option | Description |
+|--------|-------------|
+| `--brain` | `auto`, `gemini`, `openai`, `anthropic`, `openrouter` or `ollama` |
+| `-m, --model` | Pin an exact model |
+| `-e, --engine` | Engine backend |
+| `--tools` | Comma-separated tool names (default: the JARVIS toolkit) |
+| `--text` | Type requests; no microphone needed |
+| `--mute` | Don't speak replies |
+| `--no-wake-word` | Treat everything heard as a request |
+| `--check` | Show available brains and voice features, then exit |
+| `--verbose-heard` | Show speech that didn't include the wake word |
+
+For the arc-reactor HUD in the browser, run `jarvis gui --hud`.
+
+---
+
 ## `jarvis serve`
 
 Start an OpenAI-compatible API server.
@@ -489,6 +519,7 @@ The server exposes the following OpenAI-compatible endpoints:
 | POST   | `/v1/chat/completions`   | Chat completions (streaming & non-streaming) |
 | GET    | `/v1/models`             | List available models          |
 | GET    | `/health`                | Health check                   |
+| GET    | `/v1/jarvis/status`      | JARVIS mode status, brain and live system stats |
 | GET    | `/v1/channels`           | List available messaging channels    |
 | POST   | `/v1/channels/send`      | Send a message to a channel          |
 | GET    | `/v1/channels/status`    | Channel bridge connection status     |

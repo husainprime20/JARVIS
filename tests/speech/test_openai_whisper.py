@@ -55,3 +55,15 @@ def test_openai_whisper_health_no_key():
         backend._client = None
         backend._api_key = ""
         assert backend.health() is False
+
+
+def test_openai_whisper_forwards_prompt():
+    mock_client = MagicMock()
+    mock_client.audio.transcriptions.create.return_value = MagicMock(text="hi")
+
+    with patch("openjarvis.speech.openai_whisper.OpenAI", return_value=mock_client):
+        backend = OpenAIWhisperBackend(api_key="test-key")
+        backend.transcribe(b"audio", format="wav", prompt="Jarvis.")
+
+    _, kwargs = mock_client.audio.transcriptions.create.call_args
+    assert kwargs["prompt"] == "Jarvis."

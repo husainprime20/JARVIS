@@ -53,6 +53,27 @@ def test_serve_defaults_tools_when_no_selection_is_configured():
     assert explicit is False
 
 
+def test_serve_uses_agent_default_tools_when_none_are_configured():
+    from openjarvis.agents.jarvis import DEFAULT_JARVIS_TOOLS, JarvisAgent
+
+    allowed, explicit = _resolve_allowed_tools(JarvisConfig(), JarvisAgent)
+
+    assert allowed == set(DEFAULT_JARVIS_TOOLS)
+    assert explicit is False
+
+
+def test_configured_tools_override_agent_default_tools():
+    from openjarvis.agents.jarvis import JarvisAgent
+
+    config = JarvisConfig()
+    config.tools.enabled = "calculator"
+
+    allowed, explicit = _resolve_allowed_tools(config, JarvisAgent)
+
+    assert allowed == {"calculator"}
+    assert explicit is True
+
+
 def test_cors_environment_overrides_configured_defaults(monkeypatch):
     monkeypatch.setenv(
         "OPENJARVIS_CORS_ORIGINS",

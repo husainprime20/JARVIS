@@ -1639,6 +1639,30 @@ class SpeechConfig:
 
 
 @dataclass(slots=True)
+class JarvisModeConfig:
+    """JARVIS mode: the voice-first desktop assistant (``jarvis listen``).
+
+    The voice itself comes from ``[speech]`` (``tts_backend``, ``voice_id``,
+    ``voice_speed``) and speech recognition from ``[speech] backend``.
+    """
+
+    # Which "brain" answers: "auto" (first available), "gemini", "openai",
+    # "anthropic", "openrouter" or "ollama". ``model`` pins an exact model.
+    brain: str = "auto"
+    model: str = ""
+    wake_word: str = "jarvis"
+    honorific: str = "sir"  # how JARVIS addresses the user; "" = no honorific
+    require_wake_word: bool = True  # False = every utterance is a request
+    follow_up_seconds: float = 8.0  # listen for a follow-up without the wake word
+    greeting: bool = True  # speak a greeting when the voice loop starts
+    mic_threshold: int = 0  # speech loudness threshold; 0 = calibrate at startup
+    # Extra launch targets for the open_app tool, as name = path/URI/command:
+    #   [jarvis.apps]
+    #   minecraft = "C:\\XboxGames\\Minecraft Launcher\\Minecraft.exe"
+    apps: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class OptimizeConfig:
     """Configuration optimization settings."""
 
@@ -1792,6 +1816,7 @@ class JarvisConfig:
     a2a: A2AConfig = field(default_factory=A2AConfig)
     operators: OperatorsConfig = field(default_factory=OperatorsConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
+    jarvis: JarvisModeConfig = field(default_factory=JarvisModeConfig)
     optimize: OptimizeConfig = field(default_factory=OptimizeConfig)
     agent_manager: AgentManagerConfig = field(default_factory=AgentManagerConfig)
     memory_files: MemoryFilesConfig = field(default_factory=MemoryFilesConfig)
@@ -2122,6 +2147,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "a2a",
             "operators",
             "speech",
+            "jarvis",
             "optimize",
             "agent_manager",
             "digest",
@@ -2479,6 +2505,7 @@ __all__ = [
     "IntelligenceConfig",
     "IntelligenceLearningConfig",
     "JarvisConfig",
+    "JarvisModeConfig",
     "LearningConfig",
     "LMStudioEngineConfig",
     "LlamaCppEngineConfig",

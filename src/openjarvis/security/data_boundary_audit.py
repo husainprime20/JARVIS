@@ -223,6 +223,9 @@ BROWSER_TOOLS = {
     "browser_screenshot",
     "browser_search",
     "browser_type",
+    # JARVIS: open a URL / a YouTube video in the user's own browser.
+    "open_website",
+    "play_youtube",
     "web_browser",
 }
 GENERIC_NETWORK_TOOLS = {"http_request"}
@@ -280,6 +283,8 @@ LOCAL_ACCESS_TOOLS = {
     "memory_retrieve",
     "memory_search",
     "memory_store",
+    # JARVIS desktop control: launch apps, media/volume keys, machine stats.
+    "open_app",
     "pdf_extract",
     "queue_action",
     "record_decision",
@@ -287,6 +292,8 @@ LOCAL_ACCESS_TOOLS = {
     "retrieval",
     "shell_exec",
     "skill_manage",
+    "system_control",
+    "system_stats",
     "user_profile_manage",
 }
 

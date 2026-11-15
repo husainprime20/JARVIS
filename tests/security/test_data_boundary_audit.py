@@ -34,6 +34,8 @@ EXPECTED_BROWSER_TOOLS = {
     "browser_type",
     "browser_screenshot",
     "browser_extract",
+    "open_website",
+    "play_youtube",
 }
 
 EXPECTED_GENERIC_NETWORK_TOOLS = {"http_request"}
@@ -82,6 +84,9 @@ EXPECTED_LOCAL_ACCESS_TOOLS = {
     "kg_add_relation",
     "kg_query",
     "kg_neighbors",
+    "open_app",
+    "system_control",
+    "system_stats",
 }
 
 # Built-in tools with no independent data-boundary surface beyond existing
@@ -89,6 +94,8 @@ EXPECTED_LOCAL_ACCESS_TOOLS = {
 EXPLICITLY_EXEMPT_TOOLS = {
     # Pure local arithmetic; no file, network, or credential egress.
     "calculator",
+    # Reads the local clock and time-zone database only.
+    "current_datetime",
     # Local scratchpad/reasoning only; content stays in-process.
     "think",
     # Routes through the configured intelligence stack already audited via

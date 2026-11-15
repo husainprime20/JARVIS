@@ -87,6 +87,35 @@ def test_gui_custom_ports_use_project_root_and_same_origin_proxy(
     owner_type.return_value.shutdown.assert_called_once_with()
 
 
+def test_gui_hud_flag_opens_the_jarvis_page(tmp_path: Path) -> None:
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    process = mock.Mock(spec=subprocess.Popen)
+    process.pid = 4321
+    process.poll.return_value = None
+    process.wait.return_value = 0
+
+    with (
+        mock.patch.object(gui_cmd, "_frontend_dir", return_value=frontend),
+        mock.patch.object(gui_cmd, "_check_frontend_port"),
+        mock.patch.object(gui_cmd, "_ensure_frontend_dependencies"),
+        mock.patch.object(
+            gui_cmd.shutil, "which", side_effect=lambda name: f"/bin/{name}"
+        ),
+        mock.patch.object(gui_cmd.subprocess, "Popen", return_value=process),
+        mock.patch.object(gui_cmd, "_FrontendOwner"),
+        mock.patch.object(gui_cmd, "_api_healthy", return_value=False),
+        mock.patch.object(gui_cmd, "_wait_for_port", return_value=True),
+        mock.patch.object(gui_cmd.webbrowser, "open") as open_browser,
+    ):
+        result = CliRunner().invoke(
+            gui_cmd.gui, ["--no-server", "--frontend-port", "5181", "--hud"]
+        )
+
+    assert result.exit_code == 0, result.output
+    open_browser.assert_called_once_with("http://127.0.0.1:5181/jarvis")
+
+
 def test_gui_rejects_occupied_frontend_port_before_launch(tmp_path: Path) -> None:
     frontend = tmp_path / "frontend"
     frontend.mkdir()

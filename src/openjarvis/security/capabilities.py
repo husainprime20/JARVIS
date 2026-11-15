@@ -230,6 +230,8 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
     "check_permission": [Capability.MEMORY_READ],
     "code_interpreter": [Capability.CODE_EXECUTE],
     "code_interpreter_docker": [Capability.CODE_EXECUTE],
+    # current_datetime (pc_control.py) only reads the system clock.
+    "current_datetime": [],
     "db_query": [Capability.CODE_EXECUTE],
     "digest_collect": [Capability.MEMORY_READ, Capability.NETWORK_FETCH],
     "docker_shell_exec": [Capability.CODE_EXECUTE],
@@ -262,8 +264,13 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
     "memory_retrieve": [Capability.MEMORY_READ],
     "memory_search": [Capability.MEMORY_READ],
     "memory_store": [Capability.MEMORY_WRITE],
+    # JARVIS-mode desktop tools (pc_control.py) start processes on the host,
+    # so they need code:execute; the browser ones also send data outbound.
+    "open_app": [Capability.CODE_EXECUTE],
+    "open_website": [Capability.NETWORK_FETCH, Capability.CODE_EXECUTE],
     "pause_scheduled_task": [Capability.SCHEDULE_CREATE],
     "pdf_extract": [Capability.FILE_READ],
+    "play_youtube": [Capability.NETWORK_FETCH, Capability.CODE_EXECUTE],
     "queue_action": [Capability.MEMORY_WRITE],
     "record_decision": [Capability.SYSTEM_ADMIN, Capability.MEMORY_WRITE],
     "repl": [Capability.CODE_EXECUTE],
@@ -273,6 +280,9 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
     "schedule_task": [Capability.SCHEDULE_CREATE],
     "shell_exec": [Capability.CODE_EXECUTE],
     "skill_manage": [Capability.FILE_READ, Capability.FILE_WRITE],
+    "system_control": [Capability.CODE_EXECUTE],
+    # Read-only host metrics (CPU, memory, disk, battery, uptime).
+    "system_stats": [],
     "text_to_speech": [Capability.NETWORK_FETCH, Capability.FILE_WRITE],
     "think": [],
     "user_profile_manage": [Capability.FILE_READ, Capability.FILE_WRITE],
@@ -281,6 +291,8 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
 
 _SAFE_BUILTIN_PROVENANCE = {
     "calculator": ("openjarvis.tools.calculator", "CalculatorTool"),
+    "current_datetime": ("openjarvis.tools.pc_control", "CurrentDateTimeTool"),
+    "system_stats": ("openjarvis.tools.pc_control", "SystemStatsTool"),
     "think": ("openjarvis.tools.think", "ThinkTool"),
 }
 

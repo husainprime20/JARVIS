@@ -116,6 +116,17 @@ voice = [
     "sounddevice>=0.5",  # play_wav / record_until_silence in speech/voice_io.py
     "numpy>=1.24",
 ]
+# Everything JARVIS mode uses (`jarvis listen` and the HUD): speech-to-text
+# (desktop), the Kokoro British voice (voice), the Gemini, OpenAI and Anthropic
+# SDKs, and the IANA time-zone database Windows lacks. Source checkouts install
+# it with `uv sync --extra jarvis --group desktop-native`.
+jarvis = [
+    "openjarvis[desktop,voice,inference-google,inference-cloud]",
+    "tzdata>=2024.1; sys_platform == 'win32'",
+    # Kokoro's English pronunciation (misaki) installs spaCy's en_core_web_sm
+    # model with `python -m pip` on first use, and uv environments have no pip.
+    "pip>=24",
+]
 openhands = ["openhands-sdk>=1.0; python_version >= '3.12'"]
 # Apple Foundation Models (on-device AFM 3). Needs an Apple Silicon Mac on
 # macOS 26+ with Apple Intelligence enabled. The SDK compiles Swift bindings

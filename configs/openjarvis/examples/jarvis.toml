@@ -1,0 +1,46 @@
+# JARVIS mode: the Iron Man assistant. Say "Jarvis", he answers out loud in a
+# British voice, opens apps and sites, plays YouTube, reports the time,
+# weather and system stats, and remembers what you tell him.
+# Install with:  jarvis init --preset jarvis
+#
+# 1. Give JARVIS a brain. He uses the first one he finds, in this order:
+#      Google Gemini (free):  setx GEMINI_API_KEY "your-key"
+#                             (key from https://aistudio.google.com/api-keys)
+#      OpenAI (paid):         setx OPENAI_API_KEY "sk-..."
+#      Ollama (offline):      install from https://ollama.com, then
+#                             ollama pull qwen3.5:4b
+#    Open a new terminal after setx so the key is visible.
+# 2. Install speech, the voice and the brain SDKs (one command, so nothing
+#    already installed gets removed):
+#      uv sync --extra jarvis --group desktop-native
+# 3. Check his ears, voice and brain:   jarvis listen --check
+# 4. Talk to him:                       jarvis listen
+#    ...or type to him:                 jarvis listen --text
+#    ...or open the HUD:                jarvis gui --hud
+
+[agent]
+default_agent = "jarvis"          # `jarvis chat` and `jarvis ask` use JARVIS too
+
+[server]
+host = "127.0.0.1"                # keep JARVIS on this PC: he can open apps
+port = 8000
+agent = "jarvis"                  # the HUD (`jarvis gui --hud`) talks to JARVIS
+
+[speech]
+tts_backend = "kokoro"            # local British voice, no account needed
+voice_id = "bm_george"            # also: bm_lewis, bf_emma, bf_isabella
+
+[jarvis]
+brain = "auto"                    # or: gemini, openai, anthropic, openrouter, ollama
+# model = "gemini-3.8-flash"      # optional: pin an exact model
+wake_word = "jarvis"
+honorific = "sir"                 # how he addresses you ("" for none)
+require_wake_word = true          # say "Jarvis" before each request...
+follow_up_seconds = 8             # ...except for this long after he answers
+greeting = true
+
+# Teach JARVIS your own apps, then say "Jarvis, open my editor".
+# [jarvis.apps]
+# editor = 'C:\Program Files\Microsoft VS Code\Code.exe'
+# notes = "notepad.exe"
+# music = "spotify:"
