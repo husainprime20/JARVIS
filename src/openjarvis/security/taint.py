@@ -51,6 +51,9 @@ SINK_POLICY: Dict[str, Set[TaintLabel]] = {
     # http_request is the primary outbound-exfiltration sink (is_local=False):
     # tainted data must never be POSTed/GET-appended to an arbitrary URL.
     "http_request": {TaintLabel.PII, TaintLabel.SECRET},
+    # open_website hands an arbitrary URL to the browser: the same outbound
+    # exfiltration channel as http_request.
+    "open_website": {TaintLabel.PII, TaintLabel.SECRET},
     "channel_send": {TaintLabel.SECRET},
     "channel_tools": {TaintLabel.SECRET},
     "code_interpreter": {TaintLabel.SECRET},

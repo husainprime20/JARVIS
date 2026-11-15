@@ -183,3 +183,26 @@ def test_faster_whisper_supported_formats():
         assert "wav" in formats
         assert "mp3" in formats
         assert "webm" in formats
+
+
+def test_faster_whisper_prompt_and_vad_are_forwarded():
+    """Wake-word listening biases spelling and filters out non-speech."""
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = ([], MagicMock(language="en"))
+
+    with patch(
+        "openjarvis.speech.faster_whisper.WhisperModel",
+        return_value=mock_model,
+    ):
+        backend = FasterWhisperBackend(model_size="base", device="cpu")
+        backend.transcribe(b"audio", language="en", prompt="Jarvis.", vad_filter=True)
+        _, kwargs = mock_model.transcribe.call_args
+        assert kwargs == {
+            "language": "en",
+            "initial_prompt": "Jarvis.",
+            "vad_filter": True,
+        }
+
+        backend.transcribe(b"audio")
+        _, kwargs = mock_model.transcribe.call_args
+        assert kwargs == {}

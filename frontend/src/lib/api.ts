@@ -362,7 +362,18 @@ export interface SpeechHealth {
   reason?: string;
 }
 
-export async function transcribeAudio(audioBlob: Blob, filename = 'recording.webm'): Promise<TranscriptionResult> {
+export interface TranscribeOptions {
+  /** Words to expect, e.g. a wake word (helps Whisper spell names). */
+  prompt?: string;
+  /** Trim silence before recognition (reduces text invented from noise). */
+  vad?: boolean;
+}
+
+export async function transcribeAudio(
+  audioBlob: Blob,
+  filename = 'recording.webm',
+  options: TranscribeOptions = {},
+): Promise<TranscriptionResult> {
   if (isTauri()) {
     try {
       const buffer = await audioBlob.arrayBuffer();
@@ -377,6 +388,8 @@ export async function transcribeAudio(audioBlob: Blob, filename = 'recording.web
   }
   const formData = new FormData();
   formData.append('file', audioBlob, filename);
+  if (options.prompt) formData.append('prompt', options.prompt);
+  if (options.vad) formData.append('vad', '1');
   const res = await apiFetch(`/v1/speech/transcribe`, {
     method: 'POST',
     body: formData,

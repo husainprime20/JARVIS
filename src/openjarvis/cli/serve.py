@@ -39,15 +39,22 @@ def _resolve_server_cors_origins(configured: object) -> list[str]:
     return []
 
 
-def _resolve_allowed_tools(config: object) -> tuple[set[str], bool]:
+def _resolve_allowed_tools(
+    config: object,
+    agent_cls: object = None,
+) -> tuple[set[str], bool]:
     """Return configured tool names and whether the selection was explicit.
 
     ``tools.enabled`` is the canonical setting used by ``SystemBuilder`` and
     the interactive CLI.  ``agent.tools`` remains as a backward-compatible
-    fallback, followed by the server's default tool set when neither is set.
+    fallback.  When neither is set, an agent class may declare its own
+    ``default_tools`` (JARVIS does); otherwise the server default set applies.
     """
     configured = config.tools.enabled or config.agent.tools
     if not configured:
+        agent_defaults = getattr(agent_cls, "default_tools", None)
+        if agent_defaults:
+            return {str(name) for name in agent_defaults}, False
         return set(_DEFAULT_TOOLS), False
 
     if isinstance(configured, list):
@@ -187,6 +194,33 @@ def serve(
             telem_store.subscribe_to_bus(bus)
         except Exception as exc:
             logger.debug("Telemetry store init failed: %s", exc)
+
+    # JARVIS mode picks its brain (engine + model) the same way as
+    # ``jarvis listen`` -- a Gemini/OpenAI/... key, else local Ollama --
+    # unless a model was chosen explicitly for the server.
+    if (
+        (agent_name or config.server.agent) == "jarvis"
+        and not model_name
+        and not config.server.model
+    ):
+        from rich.markup import escape as _escape
+
+        from openjarvis.cli._jarvis_brain import (
+            BrainUnavailableError,
+            load_saved_cloud_keys,
+            select_brain,
+        )
+
+        load_saved_cloud_keys()
+        try:
+            brain_choice = select_brain(config, engine_key=engine_key)
+        except BrainUnavailableError as exc:
+            console.print(f"[yellow]{_escape(str(exc))}[/yellow]")
+            sys.exit(1)
+        for note in brain_choice.notes:
+            console.print(f"[yellow]{_escape(note)}[/yellow]")
+        model_name = brain_choice.model
+        console.print(f"  Brain:  [cyan]{_escape(brain_choice.describe())}[/cyan]")
 
     # Select with the model we'll actually serve so an engine that can't
     # serve it (e.g. the cloud fallback without the matching provider key) is
@@ -341,7 +375,9 @@ def serve(
                     from openjarvis.core.registry import ToolRegistry
                     from openjarvis.tools._stubs import BaseTool
 
-                    allowed, tools_configured = _resolve_allowed_tools(config)
+                    allowed, tools_configured = _resolve_allowed_tools(
+                        config, agent_cls
+                    )
 
                     tools = []
                     for name in ToolRegistry.keys():
@@ -471,7 +507,9 @@ def serve(
                         from openjarvis.core.registry import ToolRegistry
                         from openjarvis.tools._stubs import BaseTool
 
-                        _allowed, _tools_configured = _resolve_allowed_tools(config)
+                        _allowed, _tools_configured = _resolve_allowed_tools(
+                            config, _ch_cls
+                        )
 
                         for _tname in ToolRegistry.keys():
                             if _tname not in _allowed:

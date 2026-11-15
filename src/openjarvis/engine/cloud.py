@@ -34,6 +34,10 @@ PRICING: Dict[str, tuple[float, float]] = {
     "gpt-5.4": (15.00, 60.00),
     "gpt-5-mini": (0.25, 2.00),
     "o3-mini": (1.10, 4.40),
+    # GPT-6 family (developers.openai.com/api/docs/models, Nov 2026).
+    "gpt-6-luna": (0.10, 0.50),
+    "gpt-6.1-terra": (1.00, 5.00),
+    "gpt-6.1-sol": (2.00, 10.00),
     "claude-sonnet-4-20250514": (3.00, 15.00),
     "claude-opus-4-20250514": (15.00, 75.00),
     "claude-haiku-3-5-20241022": (0.80, 4.00),
@@ -47,6 +51,9 @@ PRICING: Dict[str, tuple[float, float]] = {
     "gemini-3.1-pro-preview": (2.50, 15.00),
     "gemini-3.1-flash-lite-preview": (0.30, 2.50),
     "gemini-3-flash-preview": (0.50, 3.00),
+    # Paid-tier rates; both also have a free tier (ai.google.dev/pricing).
+    "gemini-3.8-flash": (0.75, 3.75),
+    "gemini-4-hydrogen": (1.50, 7.50),
     "claude-haiku-4-5-20251001": (1.00, 5.00),
     "MiniMax-M3": (0.30, 1.20),
     "MiniMax-M2.7": (0.30, 1.20),
@@ -81,6 +88,9 @@ _OPENAI_MODELS = [
     "gpt-5.4",
     "gpt-5-mini",
     "o3-mini",
+    "gpt-6-luna",
+    "gpt-6.1-terra",
+    "gpt-6.1-sol",
 ]
 _ANTHROPIC_MODELS = [
     "claude-sonnet-4-20250514",
@@ -107,6 +117,9 @@ _GOOGLE_MODELS = [
     "gemini-3.1-pro-preview",
     "gemini-3.1-flash-lite-preview",
     "gemini-3-flash-preview",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-4-hydrogen",
 ]
 _MINIMAX_MODELS = [
     "MiniMax-M3",

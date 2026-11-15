@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import wave
+from typing import Any, Optional
 
 _SAMPLE_RATE = 16000
 _CHANNELS = 1
@@ -80,6 +81,108 @@ def record_until_silence(
     return _frames_to_wav(frames, sample_rate)
 
 
+def _open_input_stream(sample_rate: int):
+    try:
+        import sounddevice as sd
+    except ImportError:
+        raise RuntimeError(
+            "sounddevice is required for voice input. "
+            "Install with: pip install sounddevice"
+        )
+    return sd.RawInputStream(
+        samplerate=sample_rate,
+        channels=_CHANNELS,
+        dtype="int16",
+        blocksize=_CHUNK,
+    )
+
+
+def measure_noise_floor(
+    *,
+    seconds: float = 1.0,
+    sample_rate: int = _SAMPLE_RATE,
+) -> float:
+    """Return the typical RMS level of the room (median over *seconds*)."""
+    chunks = max(1, int(seconds * sample_rate / _CHUNK))
+    levels: list[float] = []
+    with _open_input_stream(sample_rate) as stream:
+        for _ in range(chunks):
+            raw, _ = stream.read(_CHUNK)
+            levels.append(_rms(bytes(raw)))
+    levels.sort()
+    return levels[len(levels) // 2]
+
+
+def record_utterance(
+    *,
+    sample_rate: int = _SAMPLE_RATE,
+    silence_threshold: float = _SILENCE_THRESHOLD,
+    silence_seconds: float = 1.0,
+    wait_seconds: Optional[float] = None,
+    max_seconds: float = 15.0,
+    pre_roll_seconds: float = 0.4,
+    min_speech_seconds: float = 0.25,
+    stop_event: Optional[Any] = None,
+) -> Optional[bytes]:
+    """Wait for someone to speak and return just that utterance as WAV bytes.
+
+    Unlike :func:`record_until_silence`, this is built for an always-listening
+    loop: it waits up to *wait_seconds* (``None`` = forever) for speech, keeps
+    a short pre-roll so the first syllable is not clipped, and returns ``None``
+    when nothing louder than a click was heard (so silence is never sent to
+    speech recognition). *stop_event* (a ``threading.Event``) ends the wait.
+    """
+    from collections import deque
+
+    chunks_per_second = sample_rate / _CHUNK
+    silence_chunks = max(1, int(silence_seconds * chunks_per_second))
+    max_chunks = max(1, int(max_seconds * chunks_per_second))
+    wait_chunks = (
+        None if wait_seconds is None else max(1, int(wait_seconds * chunks_per_second))
+    )
+    min_loud_chunks = max(1, int(min_speech_seconds * chunks_per_second))
+    pre_roll: deque[bytes] = deque(
+        maxlen=max(1, int(pre_roll_seconds * chunks_per_second))
+    )
+
+    frames: list[bytes] = []
+    loud_chunks = 0
+    silence_count = 0
+    waited = 0
+    with _open_input_stream(sample_rate) as stream:
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return None
+            raw, _ = stream.read(_CHUNK)
+            data = bytes(raw)
+            loud = _rms(data) > silence_threshold
+            if not frames:
+                # Still waiting for speech to start.
+                if loud:
+                    frames.extend(pre_roll)
+                    frames.append(data)
+                    loud_chunks = 1
+                    continue
+                pre_roll.append(data)
+                waited += 1
+                if wait_chunks is not None and waited >= wait_chunks:
+                    return None
+                continue
+            frames.append(data)
+            if loud:
+                loud_chunks += 1
+                silence_count = 0
+            else:
+                silence_count += 1
+                if silence_count >= silence_chunks:
+                    break
+            if len(frames) >= max_chunks:
+                break
+    if loud_chunks < min_loud_chunks:
+        return None
+    return _frames_to_wav(frames, sample_rate)
+
+
 def _frames_to_wav(frames: list[bytes], sample_rate: int) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -123,4 +226,9 @@ def play_wav(audio: bytes, sample_rate: int = 24000) -> None:
     sd.wait()
 
 
-__all__ = ["play_wav", "record_until_silence"]
+__all__ = [
+    "measure_noise_floor",
+    "play_wav",
+    "record_until_silence",
+    "record_utterance",
+]

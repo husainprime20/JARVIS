@@ -463,7 +463,14 @@ def _ensure_frontend_dependencies(frontend: Path, npm: str) -> None:
 )
 @click.option("--no-server", is_flag=True, help="Do not start the API server.")
 @click.option("--no-browser", is_flag=True, help="Only start the frontend.")
-def gui(frontend_port: int, api_port: int, no_server: bool, no_browser: bool) -> None:
+@click.option(
+    "--hud",
+    is_flag=True,
+    help="Open the JARVIS HUD (arc reactor, voice, system stats) instead of chat.",
+)
+def gui(
+    frontend_port: int, api_port: int, no_server: bool, no_browser: bool, hud: bool
+) -> None:
     """Start the browser-based graphical mode in the default browser.
 
     This command is intended for source checkouts. For an installed desktop
@@ -570,7 +577,7 @@ def gui(frontend_port: int, api_port: int, no_server: bool, no_browser: bool) ->
                 "The graphical frontend did not start on the requested port."
             )
         owner.refresh()
-        url = f"http://127.0.0.1:{frontend_port}"
+        url = f"http://127.0.0.1:{frontend_port}" + ("/jarvis" if hud else "")
         console.print(f"[green]OpenJarvis graphical mode is ready:[/green] {url}")
         if not no_browser:
             webbrowser.open(url)

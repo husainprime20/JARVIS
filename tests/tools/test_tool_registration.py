@@ -102,6 +102,13 @@ EXPECTED_TOOLS = {
     "get_pending_actions",
     "record_decision",
     "execute_pending_actions",
+    # pc_control.py
+    "open_app",
+    "open_website",
+    "play_youtube",
+    "system_control",
+    "system_stats",
+    "current_datetime",
 }
 
 
