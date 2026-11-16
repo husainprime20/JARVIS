@@ -145,15 +145,31 @@ jobs:
             scripts/desktop/smoke_jarvis_backend.py \
             --backend frontend/src-tauri/jarvis-backend
 
-      # The app bundles Ollama as a Tauri sidecar. The script extracts only
-      # ollama.exe for x64; Ollama downloads its model runtime on first run,
-      # which keeps the installer small instead of bundling ~1 GB.
+      # The app bundles Ollama as a Tauri sidecar. ollama.exe alone can only
+      # start and download models: running one needs the archive's lib/ollama
+      # runtime (llama-server.exe and its DLLs), which the script stages under
+      # binaries/ollama-runtime-x86_64-pc-windows-msvc. It leaves out the
+      # NVIDIA CUDA libraries (over 1 GB); models run on the CPU, and on the
+      # GPU through Vulkan.
       - name: Download Ollama sidecar
         shell: bash
         working-directory: frontend/src-tauri/scripts
         run: |
           chmod +x download-ollama.sh
           ./download-ollama.sh x86_64-pc-windows-msvc
+
+      # Lay out ollama.exe and its runtime as in the install folder, start it
+      # the way the app does, and run the model the app picks for 4-8 GB PCs.
+      # The backend smoke test above uses a stand-in Ollama, so only this
+      # catches an Ollama that cannot run models.
+      - name: Smoke-test the bundled Ollama
+        shell: bash
+        run: |
+          uv run --no-project --python 3.12 python \
+            scripts/desktop/smoke_ollama_runtime.py \
+            --ollama frontend/src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe \
+            --runtime frontend/src-tauri/binaries/ollama-runtime-x86_64-pc-windows-msvc \
+            --model qwen3.5:0.8b
 
       # uv installs Python and the backend's packages on first launch; the
       # app prefers this copy over any uv on PATH.
@@ -167,9 +183,10 @@ jobs:
 
       # tauri.conf.json intentionally does not declare sidecars or resources
       # (release builds layer their own config on top). Generate an override:
-      # bundle Ollama, uv and the staged backend (installed as <dir>\src, the
-      # first place the app looks for a backend), but no updater artifacts,
-      # which would require TAURI_SIGNING_PRIVATE_KEY.
+      # bundle Ollama with its runtime (lib\ollama beside ollama.exe, where
+      # Ollama looks for llama-server), uv and the staged backend (installed as
+      # <dir>\src, the first place the app looks for a backend), but no updater
+      # artifacts, which would require TAURI_SIGNING_PRIVATE_KEY.
       - name: Write unsigned build config
         id: config
         shell: bash
@@ -186,7 +203,10 @@ jobs:
             version: process.env.EXE_VERSION || source.version,
             bundle: {
               externalBin: ['binaries/ollama', 'binaries/uv'],
-              resources: { 'jarvis-backend/': 'src/' },
+              resources: {
+                'jarvis-backend/': 'src/',
+                'binaries/ollama-runtime-x86_64-pc-windows-msvc/': './',
+              },
               createUpdaterArtifacts: false,
             },
           };
@@ -233,7 +253,7 @@ jobs:
           bundle_dir=frontend/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
           installer="$(find "$bundle_dir" -maxdepth 1 -name '*.exe' -print -quit)"
           test -n "$installer"
-          listing="$(7z l "$installer")"
+          listing="$(7z l "$installer" | tr -d '\r')"
           for expected in 'uv.exe' 'ollama.exe' 'openjarvis-desktop.exe' \
             'src\pyproject.toml' 'src\uv.lock' 'src\src\openjarvis\agents\jarvis.py' \
             'src\wheels\openjarvis_rust-'; do
@@ -242,9 +262,21 @@ jobs:
               exit 1
             fi
           done
+          # Ollama finds its runtime only in lib\ollama beside ollama.exe.
+          for expected in 'lib\ollama\llama-server.exe' 'lib\ollama\ggml-base.dll'; do
+            if ! grep -qE "[[:space:]]${expected//\\/\\\\}\$" <<<"$listing"; then
+              echo "::error title=Installer contents::missing $expected beside ollama.exe"
+              exit 1
+            fi
+          done
+          if grep -qF 'lib\ollama\cuda_' <<<"$listing"; then
+            echo "::error title=Installer contents::the CUDA libraries (over 1 GB) were bundled"
+            exit 1
+          fi
           files="$(grep -cF 'src\src\openjarvis\' <<<"$listing" || true)"
+          runtime="$(grep -cF 'lib\ollama\' <<<"$listing" || true)"
           size="$(du -h "$installer" | cut -f1)"
-          echo "::notice title=Installer::$(basename "$installer") ($size, $files backend files)"
+          echo "::notice title=Installer::$(basename "$installer") ($size, $files backend files, $runtime Ollama runtime files)"
 
   release:
     name: Publish pre-release

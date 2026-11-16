@@ -67,6 +67,11 @@ export function friendlyError(error: unknown, honorific = 'sir'): string {
   if (has('ollama not reachable')) {
     return `My offline brain, Ollama, isn't responding${title}. Restarting the app usually brings it back.`;
   }
+  // Ollama answers but cannot start the program that runs models, e.g.
+  // "llama-server binary not found" when its lib\ollama runtime is missing.
+  if (has('error starting llama-server', 'llama-server binary not found', 'llama runner process has terminated')) {
+    return `My offline brain couldn't start its model${title}. Installing the latest version of the app usually fixes it, or add a free Gemini key in Settings and restart me.`;
+  }
   const unreachable = ['failed to fetch', 'networkerror', 'load failed', 'connection error', 'connection refused'];
   if (code(502, 503, 504) || has(...unreachable, 'timed out', 'timeout', 'unreachable')) {
     return `I can't reach my brain right now${title}. Is the OpenJarvis server running?`;

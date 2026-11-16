@@ -162,6 +162,17 @@ describe('helpers', () => {
     expect(friendlyError(new Error('503 Ollama not reachable at http://localhost:11434'))).toMatch(
       /Ollama, isn't responding, sir/,
     );
+    // The error from Windows installers that left out Ollama's model runtime.
+    expect(
+      friendlyError(
+        new Error(
+          "500 Ollama returned 500: error starting llama-server: llama-server binary not found (checked: C:\\Users\\NOVA\\AppData\\Local\\OpenJarvis\\llama-server.exe). Run 'cmake -S llama/server --preset cpu' first",
+        ),
+      ),
+    ).toMatch(/couldn't start its model, sir\. Installing the latest version/);
+    expect(friendlyError(new Error('500 Ollama returned 500: llama runner process has terminated: exit status 2'))).toMatch(
+      /couldn't start its model/,
+    );
     expect(friendlyError(new Error('500 429 RESOURCE_EXHAUSTED: quota exceeded'))).toMatch(/usage limit/);
     expect(friendlyError(new Error('500 403 PERMISSION_DENIED'))).toMatch(/API key was rejected/);
   });

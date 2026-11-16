@@ -214,6 +214,7 @@ to `bm_george`, `bm_lewis`, `bf_emma` or `bf_isabella`.
 | No voice | Run the full `uv sync` command from step 1 and restart the server |
 | "My offline brain needs more free memory than this PC has right now" | Ollama could not load the model, even after JARVIS shrank its context (it does so automatically). Close memory-hungry programs such as browser tabs, or add a free Gemini key (step 4 of the Windows app, or step 2 here) so JARVIS stops needing a local model |
 | "My offline brain, Ollama, isn't responding" | Restart the app, or run `ollama serve` |
+| "My offline brain couldn't start its model", or `llama-server binary not found` on screen | Ollama is missing its model runtime (`lib\ollama` beside `ollama.exe`). Windows installers before 1.0.3 left it out: install the latest one (quit OpenJarvis from its tray icon first), or add a free Gemini key in Settings → Google and restart the app |
 | "I can't reach my brain right now" | The JARVIS server is not running. In the Windows app, restart it. From source, start it with `jarvis serve`, or use `jarvis gui --hud` |
 | HUD says the server is offline | Start it with `jarvis serve`, or use `jarvis gui --hud` |
 | "API port 8000 is already serving an unregistered service" | You already ran `jarvis serve`; use `jarvis gui --hud --no-server` |

@@ -37,11 +37,13 @@
 
 .PARAMETER SkipOllama
     Skip the Ollama sidecar download (use when
-    frontend/src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe exists).
+    frontend/src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe and its
+    runtime folder, ollama-runtime-x86_64-pc-windows-msvc, exist).
 
 .PARAMETER SmokeTest
     Before packaging, install the bundled backend the way the app will and
-    hold a scripted JARVIS conversation (downloads about 1 GB of packages).
+    hold a scripted JARVIS conversation (downloads about 1 GB of packages),
+    then run a real model through the bundled Ollama (downloads about 1 GB).
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\build-exe.ps1
@@ -77,6 +79,10 @@ $Frontend = Join-Path $RepoRoot "frontend"
 $TauriDir = Join-Path $Frontend "src-tauri"
 $BinariesDir = Join-Path $TauriDir "binaries"
 $Sidecar = Join-Path $BinariesDir "ollama-$Target.exe"
+# ollama.exe can only run models with lib\ollama (llama-server.exe and its
+# DLLs) beside it; the installer places this folder's contents there.
+$OllamaRuntime = Join-Path $BinariesDir "ollama-runtime-$Target"
+$LlamaServer = Join-Path $OllamaRuntime "lib\ollama\llama-server.exe"
 $ConfigPath = Join-Path $TauriDir "tauri.windows-exe.conf.json"
 $BackendDir = Join-Path $TauriDir "jarvis-backend"
 $WheelDir = Join-Path $RepoRoot "dist\wheels"
@@ -151,13 +157,13 @@ else {
 
 Write-Step "Preparing the Ollama sidecar"
 if ($SkipOllama) {
-    if (-not (Test-Path $Sidecar)) {
-        throw "-SkipOllama was set but $Sidecar does not exist."
+    if (-not ((Test-Path $Sidecar) -and (Test-Path $LlamaServer))) {
+        throw "-SkipOllama was set but $Sidecar or $LlamaServer does not exist."
     }
     Write-Host "Skipped (-SkipOllama)."
 }
-elseif (Test-Path $Sidecar) {
-    Write-Host "Already present: $Sidecar"
+elseif ((Test-Path $Sidecar) -and (Test-Path $LlamaServer)) {
+    Write-Host "Already present: $Sidecar and its runtime"
 }
 else {
     New-Item -ItemType Directory -Force -Path $BinariesDir | Out-Null
@@ -186,6 +192,22 @@ else {
         if (-not (Test-Path $exe)) {
             throw "ollama.exe was not found in the downloaded archive."
         }
+        $libOllama = Join-Path $extractDir "lib\ollama"
+        if (-not (Test-Path (Join-Path $libOllama "llama-server.exe"))) {
+            throw "The archive is missing lib\ollama\llama-server.exe (Ollama's model runtime)."
+        }
+        # Leave out the NVIDIA CUDA libraries (over 1 GB): models still run on
+        # the CPU, and on the GPU through the Vulkan backend.
+        Get-ChildItem -Path $libOllama -Directory |
+            Where-Object { $_.Name -like "cuda_*" -or $_.Name -like "rocm*" -or $_.Name -like "mlx*" } |
+            ForEach-Object {
+                Write-Host "Leaving out lib\ollama\$($_.Name)"
+                Remove-Item -Recurse -Force $_.FullName
+            }
+        if (Test-Path $OllamaRuntime) { Remove-Item -Recurse -Force $OllamaRuntime }
+        New-Item -ItemType Directory -Force -Path $OllamaRuntime | Out-Null
+        Get-ChildItem -Path $extractDir | Where-Object { $_.Name -ne "ollama.exe" } |
+            ForEach-Object { Copy-Item -Path $_.FullName -Destination $OllamaRuntime -Recurse -Force }
         Copy-Item -Path $exe -Destination $Sidecar -Force
         Remove-Item -Recurse -Force $extractDir
         Remove-Item -Force $archive
@@ -194,6 +216,9 @@ else {
 
 if (-not (Test-Path $Sidecar)) {
     throw "Ollama sidecar is missing: $Sidecar"
+}
+if (-not (Test-Path $LlamaServer)) {
+    throw "Ollama's model runtime is missing: $LlamaServer"
 }
 
 # openjarvis_rust is not built for the stable ABI, so the wheel targets one
@@ -227,6 +252,13 @@ if ($SmokeTest) {
         -Arguments @("run", "--no-project", "--python", "3.12", "python",
             "scripts/desktop/smoke_jarvis_backend.py", "--backend", $BackendDir) `
         -WorkingDirectory $RepoRoot
+
+    Write-Step "Smoke-testing the bundled Ollama"
+    Invoke-Native -FilePath "uv" `
+        -Arguments @("run", "--no-project", "--python", "3.12", "python",
+            "scripts/desktop/smoke_ollama_runtime.py", "--ollama", $Sidecar,
+            "--runtime", $OllamaRuntime, "--model", "qwen3.5:0.8b") `
+        -WorkingDirectory $RepoRoot
 }
 
 # The app installs Python and the backend's packages with this uv on first
@@ -245,8 +277,13 @@ $config = [ordered]@{
     version = $effectiveVersion
     bundle  = [ordered]@{
         externalBin            = @("binaries/ollama", "binaries/uv")
-        # Installed as <install dir>\src, the first place the app looks.
-        resources              = [ordered]@{ "jarvis-backend/" = "src/" }
+        # The backend is installed as <install dir>\src, the first place the
+        # app looks; Ollama's runtime as <install dir>\lib\ollama, beside
+        # ollama.exe, where Ollama looks for llama-server.
+        resources              = [ordered]@{
+            "jarvis-backend/"                 = "src/"
+            "binaries/ollama-runtime-$Target/" = "./"
+        }
         createUpdaterArtifacts = $false
     }
 }
