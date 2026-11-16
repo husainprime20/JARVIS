@@ -506,6 +506,13 @@ def create_app(
         except Exception as exc:
             logger.debug("Auth middleware init skipped: %s", exc)
 
+    # Directly inside CORS: turn an unhandled exception into a JSON 500 that
+    # carries the CORS headers. Starlette's own 500 is sent from outside CORS,
+    # so browser clients (the desktop app) would see only "Failed to fetch".
+    from openjarvis.server.error_middleware import JSONErrorMiddleware
+
+    app.add_middleware(JSONErrorMiddleware)
+
     # Register CORS last so it is the outermost middleware. In addition to
     # handling preflights, this ensures browser clients can read 401 responses
     # produced directly by AuthMiddleware instead of seeing an opaque CORS

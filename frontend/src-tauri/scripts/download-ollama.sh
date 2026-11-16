@@ -11,10 +11,17 @@
 #   ./download-ollama.sh x86_64-unknown-linux-gnu
 #   ./download-ollama.sh aarch64-pc-windows-msvc
 #
-# Ollama distributes platform binaries as archives (.tgz / .tar.zst).
+# Ollama distributes platform binaries as archives (.tgz / .tar.zst / .zip).
 # This script downloads, extracts the `ollama` CLI binary, renames it
 # to the Tauri target-triple convention, and places it under
 # frontend/src-tauri/binaries/.
+#
+# On Windows, ollama.exe alone only starts the server and downloads models.
+# Running a model needs the archive's lib/ollama runtime (llama-server.exe and
+# its DLLs) beside it, so the script also stages that runtime under
+# binaries/ollama-runtime-<target>/ for the installer to place next to
+# ollama.exe. For x64 it leaves out the NVIDIA CUDA libraries (over 1 GB);
+# models still run on the CPU, and on the GPU through Vulkan.
 
 set -euo pipefail
 
@@ -65,8 +72,14 @@ esac
 OUT_FILE="$BINARIES_DIR/ollama-${TARGET}${SUFFIX}"
 RUNTIME_DIR="$BINARIES_DIR/ollama-runtime-${TARGET}"
 
-# ARM64 inference also needs the archive's DLLs and lib/ollama runners.
-if [ -f "$OUT_FILE" ] && { [ "$TARGET" != "aarch64-pc-windows-msvc" ] || [ -d "$RUNTIME_DIR/lib/ollama" ]; }; then
+# Windows inference also needs the archive's DLLs and lib/ollama runtime;
+# without it every request fails with "llama-server binary not found".
+NEEDS_RUNTIME=0
+case "$TARGET" in
+    *windows*) NEEDS_RUNTIME=1 ;;
+esac
+
+if [ -f "$OUT_FILE" ] && { [ "$NEEDS_RUNTIME" = 0 ] || [ -d "$RUNTIME_DIR/lib/ollama" ]; }; then
     echo "Already exists: $OUT_FILE"
     echo "Delete it first to re-download."
     exit 0
@@ -151,10 +164,23 @@ if [ "$TARGET" = "universal-apple-darwin" ]; then
     fi
 fi
 
-if [ "$TARGET" = "aarch64-pc-windows-msvc" ]; then
+if [ "$NEEDS_RUNTIME" = 1 ]; then
     if [ ! -d "$OLLAMA_TMP_DIR/lib/ollama" ]; then
         echo "Windows Ollama archive is missing its lib/ollama inference runtime"
         exit 1
+    fi
+    if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then
+        # The x64 archive also carries NVIDIA CUDA runtimes (cuda_v12/,
+        # cuda_v13/), which make up most of its 1.5 GB. Leave them out:
+        # llama-server still runs models on the CPU, and on NVIDIA, AMD and
+        # Intel GPUs through the lib/ollama/vulkan backend and the normal
+        # graphics driver. ROCm and MLX come in separate archives already.
+        for gpu_runtime in "$OLLAMA_TMP_DIR"/lib/ollama/cuda_* \
+            "$OLLAMA_TMP_DIR"/lib/ollama/rocm* "$OLLAMA_TMP_DIR"/lib/ollama/mlx*; do
+            [ -e "$gpu_runtime" ] || continue
+            echo "Leaving out lib/ollama/$(basename "$gpu_runtime") ($(du -sh "$gpu_runtime" | cut -f1))"
+            rm -rf "$gpu_runtime"
+        done
     fi
     # Preserve the release layout beside the renamed sidecar. The release
     # config maps this directory beside the installed ollama.exe.
@@ -166,6 +192,7 @@ if [ "$TARGET" = "aarch64-pc-windows-msvc" ]; then
         esac
         cp -R "$resource" "$RUNTIME_DIR/"
     done
+    echo "Inference runtime: $RUNTIME_DIR ($(du -sh "$RUNTIME_DIR" | cut -f1))"
 fi
 
 cp "$OLLAMA_BIN" "$OUT_FILE"

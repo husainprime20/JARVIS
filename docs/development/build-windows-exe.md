@@ -16,8 +16,13 @@ developer tools:
   Studio Build Tools.
 - **`uv.exe`:** installs Python 3.12 and the backend's packages
   (`uv sync --extra jarvis --group desktop-native`) on first launch.
-- **`ollama.exe`:** the offline brain. If a cloud key is saved in Settings
-  (for example a free Gemini key), JARVIS uses that instead.
+- **`ollama.exe`:** the offline brain, with Ollama's model runtime in
+  `<install dir>\lib\ollama` (`llama-server.exe` and its DLLs; without them
+  Ollama can download models but not run them). Models run on the CPU, or on
+  the GPU through Vulkan, which works with NVIDIA, AMD and Intel graphics
+  drivers. Ollama's NVIDIA CUDA libraries (over 1 GB) are left out to keep the
+  installer small. If a cloud key is saved in Settings (for example a free
+  Gemini key), JARVIS uses that instead.
 
 Because it links Windows system libraries, the installer **must be built on
 Windows**. It cannot be cross-compiled from Linux or macOS.
@@ -44,9 +49,19 @@ workflow is manual and needs **no repository secrets**. It:
    `scripts/desktop/smoke_jarvis_backend.py`. This installs it exactly as the
    app will, imports the speech, voice and cloud SDKs, calls the PC tools, and
    holds a scripted JARVIS conversation through `jarvis serve` (time zone, a
-   saved memory, opening Notepad);
-4. bundles uv and Ollama, builds the NSIS installer, and checks the
-   installer's contents.
+   saved memory, opening Notepad). The requests come from the app's webview
+   origin and must get CORS headers. The stand-in Ollama only has the free
+   memory of a busy 8 GB PC, so the server must shrink the model's context, and
+   a crashing model must reach the app as a readable error;
+4. downloads Ollama and stages its model runtime without the CUDA libraries
+   (`frontend/src-tauri/scripts/download-ollama.sh`), then runs a real model
+   through it with `scripts/desktop/smoke_ollama_runtime.py`: `ollama.exe` and
+   `lib\ollama` laid out as in the install folder, started the way the app
+   starts it, answering with `qwen3.5:0.8b`, the model the app picks for 4–8 GB
+   PCs;
+5. bundles uv and Ollama, builds the NSIS installer, and checks the
+   installer's contents (including `lib\ollama\llama-server.exe`, and no CUDA
+   libraries).
 
 To run it:
 
@@ -111,7 +126,8 @@ Useful flags:
 # Override the installer version
 powershell -ExecutionPolicy Bypass -File scripts\build-exe.ps1 -Version 1.0.2
 
-# Smoke-test the bundled backend first (downloads about 1 GB of packages)
+# Smoke-test the bundled backend and Ollama first (downloads about 2 GB:
+# the backend's packages and a small model)
 powershell -ExecutionPolicy Bypass -File scripts\build-exe.ps1 -SmokeTest
 
 # Also produce an MSI
@@ -126,7 +142,9 @@ later builds are incremental.
 
 ### What the script does
 
-1. `npm ci` in `frontend/`, and downloads the Ollama sidecar.
+1. `npm ci` in `frontend/`, and downloads the Ollama sidecar with its model
+   runtime (`frontend/src-tauri/binaries/ollama-runtime-x86_64-pc-windows-msvc`,
+   without the CUDA libraries).
 2. `uv python install 3.12`, then builds the extension wheel:
    `uvx --from "maturin>=1.12.6,<2" maturin build --release --manifest-path rust/crates/openjarvis-python/Cargo.toml --interpreter <python 3.12> --out dist\wheels`.
 3. Stages the backend:
@@ -138,10 +156,13 @@ later builds are incremental.
 
     ```json
     {
-      "version": "1.0.1",
+      "version": "1.0.3",
       "bundle": {
         "externalBin": ["binaries/ollama", "binaries/uv"],
-        "resources": { "jarvis-backend/": "src/" },
+        "resources": {
+          "jarvis-backend/": "src/",
+          "binaries/ollama-runtime-x86_64-pc-windows-msvc/": "./"
+        },
         "createUpdaterArtifacts": false
       }
     }

@@ -11,6 +11,10 @@ The Windows EXE workflow runs this on the build machine before packaging:
    speak a sentence in the British voice and transcribe it back (the HUD's
    speech path), and hold a conversation that makes JARVIS use his tools: a
    time zone, saving and recalling a memory, and (on Windows) opening Notepad.
+   Requests come from the app's webview origin and must get CORS headers. The
+   stand-in has the free memory of a busy 8 GB PC, so the server must shrink
+   the model's context, and a crashing model must reach the app as a readable
+   error rather than "Failed to fetch".
 
 Usage::
 
@@ -53,6 +57,19 @@ CLOUD_KEYS = (
     "OPENROUTER_API_KEY",
 )
 STAND_IN_MODEL = "qwen3.5:4b"
+# The stand-in behaves like Ollama on a busy 8 GB PC: it cannot load the model
+# with JARVIS's default 16k context, only with this much or less. The server
+# must shrink the context instead of failing every request.
+STAND_IN_FITTING_CTX = 8192
+LOW_MEMORY_ERROR = (
+    "model requires more system memory (3.1 GiB) than is available (2.4 GiB)"
+)
+# A request containing this makes the stand-in's runner crash, to check that a
+# failing brain reaches the HUD as a readable error.
+CRASH_PHRASE = "simulate a crash"
+CRASH_ERROR = "llama runner process has terminated: exit status 2"
+# The desktop app's webview origin; the server must answer it with CORS headers.
+APP_ORIGIN = "http://tauri.localhost"
 IMPORTS = (
     "openjarvis_rust",
     "faster_whisper",
@@ -135,13 +152,28 @@ def scripted_reply(body: dict[str, Any]) -> dict[str, Any]:
     return {"role": "assistant", "content": "Good evening, sir."}
 
 
+def stand_in_failure(body: dict[str, Any]) -> str | None:
+    """The error the stand-in Ollama answers *body* with, if any."""
+    messages = body.get("messages") or []
+    users = [m for m in messages if m.get("role") == "user"]
+    if users and CRASH_PHRASE in str(users[-1].get("content", "")).lower():
+        return CRASH_ERROR
+    num_ctx = (body.get("options") or {}).get("num_ctx") or 4096
+    if num_ctx > STAND_IN_FITTING_CTX:
+        return LOW_MEMORY_ERROR
+    return None
+
+
 class _StandInOllama(BaseHTTPRequestHandler):
+    # Every /api/chat request as (num_ctx, error or None), for the checks.
+    chats: list[tuple[int | None, str | None]] = []
+
     def log_message(self, *args: Any) -> None:  # keep the CI log readable
         pass
 
-    def _send(self, payload: dict[str, Any]) -> None:
+    def _send(self, payload: dict[str, Any], status: int = 200) -> None:
         data = json.dumps(payload).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -166,6 +198,12 @@ class _StandInOllama(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path.startswith("/api/chat"):
+            error = stand_in_failure(body)
+            num_ctx = (body.get("options") or {}).get("num_ctx")
+            _StandInOllama.chats.append((num_ctx, error))
+            if error:
+                self._send({"error": error}, status=500)
+                return
             self._send(
                 {
                     "model": body.get("model"),
@@ -180,6 +218,7 @@ class _StandInOllama(BaseHTTPRequestHandler):
 
 
 def start_stand_in_ollama() -> tuple[ThreadingHTTPServer, int]:
+    _StandInOllama.chats = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StandInOllama)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, server.server_address[1]
@@ -220,6 +259,37 @@ def http_post_bytes(
         return response.read(), dict(response.headers.items())
 
 
+def hud_chat(
+    base: str, model: str, text: str, timeout: float = 180
+) -> tuple[int, dict[str, str], Any]:
+    """One turn as the JARVIS HUD sends it: non-streaming, from the app origin.
+
+    Returns ``(status, headers, body)`` for error replies too, since the HUD
+    reads those: a failed request must still be JSON with CORS headers.
+    """
+    request = urllib.request.Request(
+        f"{base}/v1/chat/completions",
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": text}],
+                "stream": False,
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Origin": APP_ORIGIN},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status, headers, raw = response.status, response.headers, response.read()
+    except urllib.error.HTTPError as exc:
+        status, headers, raw = exc.code, exc.headers, exc.read()
+    try:
+        body: Any = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        body = raw.decode("utf-8", errors="replace")
+    return status, {k.lower(): v for k, v in headers.items()}, body
+
+
 def multipart(fields: dict[str, str], file_name: str, data: bytes) -> tuple[bytes, str]:
     boundary = "jarvis-smoke-boundary"
     parts = []
@@ -257,6 +327,7 @@ def run(
 
 def backend_env(home: Path, *, utf8: bool = True) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in CLOUD_KEYS}
+    env.pop("JARVIS_NUM_CTX", None)  # the app's default context, as on a PC
     env["OPENJARVIS_HOME"] = str(home)
     env.pop("VIRTUAL_ENV", None)
     if utf8:
@@ -378,6 +449,46 @@ def check_voice(base: str, server_log: Any) -> None:
         report_warning("speech", f"Transcript differs from {sentence!r}: {heard!r}")
 
 
+def check_low_memory_fallback(chats: list[tuple[int | None, str | None]]) -> None:
+    """The server shrank the context when the model did not fit in memory."""
+    refused = [ctx for ctx, error in chats if error == LOW_MEMORY_ERROR]
+    answered = [ctx for ctx, error in chats if error is None]
+    if not refused:
+        raise SmokeFailure(
+            f"The stand-in never refused a context above {STAND_IN_FITTING_CTX}; "
+            f"the requests asked for {sorted({c for c, _ in chats})}"
+        )
+    if not answered or any((ctx or 0) > STAND_IN_FITTING_CTX for ctx in answered):
+        raise SmokeFailure(f"The server did not shrink the context: {chats}")
+    # The fitting size is remembered: one refusal per model load, not per turn.
+    if len(refused) > 2:
+        raise SmokeFailure(f"Every turn hit the memory limit again: {chats}")
+    print(
+        f"  ok  low memory: a {max(refused)}-token context did not fit; "
+        f"answered {len(answered)} requests at {max(c or 0 for c in answered)}",
+        flush=True,
+    )
+
+
+def check_failure_reaches_hud(base: str, model: str) -> None:
+    """A failing brain is reported to the app, not hidden as a network error."""
+    code, headers, body = hud_chat(base, model, f"Jarvis, {CRASH_PHRASE}")
+    detail = body.get("detail") if isinstance(body, dict) else None
+    problems = []
+    if code < 500:
+        problems.append(f"HTTP {code}")
+    if headers.get("access-control-allow-origin") != APP_ORIGIN:
+        problems.append("no CORS header, so the webview sees 'Failed to fetch'")
+    if not isinstance(detail, str) or CRASH_ERROR not in detail:
+        problems.append(f"the reply does not say what failed: {body!r}")
+    if problems:
+        raise SmokeFailure(
+            "A failed chat must reach the app as a readable error: "
+            + "; ".join(problems)
+        )
+    print(f"  ok  a failing brain is reported: HTTP {code} {detail}", flush=True)
+
+
 def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
     stand_in, ollama_port = start_stand_in_ollama()
     (home / "config.toml").write_text(
@@ -462,15 +573,16 @@ def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
             print("  --  voice checks skipped", flush=True)
 
         def ask(text: str) -> str:
-            reply = http_json(
-                f"{base}/v1/chat/completions",
-                {
-                    "model": status["model"],
-                    "messages": [{"role": "user", "content": text}],
-                    "stream": False,
-                },
-                timeout=180,
-            )
+            code, headers, reply = hud_chat(base, status["model"], text)
+            if code != 200:
+                raise SmokeFailure(
+                    f"{text!r} failed with HTTP {code}: {reply}\n{server_log()}"
+                )
+            if headers.get("access-control-allow-origin") != APP_ORIGIN:
+                raise SmokeFailure(
+                    f"The reply has no CORS header for {APP_ORIGIN}, so the "
+                    f"app's webview could not read it: {headers}"
+                )
             answer = reply["choices"][0]["message"]["content"] or ""
             print(f"  you: {text}\n  jarvis: {answer}", flush=True)
             lowered = answer.lower()
@@ -500,6 +612,8 @@ def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
                 capture_output=True,
                 check=False,
             )
+        check_low_memory_fallback(_StandInOllama.chats)
+        check_failure_reaches_hud(base, status["model"])
     finally:
         server.terminate()
         try:

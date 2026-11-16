@@ -76,9 +76,8 @@ fn total_ram_gb() -> f64 {
     }
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
         // wmic returns TotalVisibleMemorySize in KB
-        if let Ok(output) = Command::new("wmic")
+        if let Ok(output) = background_std_command("wmic")
             .args(["OS", "get", "TotalVisibleMemorySize", "/value"])
             .output()
         {
@@ -295,7 +294,7 @@ fn resolve_bin(name: &str) -> String {
     // On Windows this uses `where.exe`, on Unix `which`.
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = std::process::Command::new("where")
+        if let Ok(output) = background_std_command("where")
             .arg(format!("{name}.exe"))
             .output()
         {
@@ -460,6 +459,39 @@ impl ChildHandle {
 fn spawn_owned_child(cmd: &mut tokio::process::Command) -> std::io::Result<tokio::process::Child> {
     cmd.kill_on_drop(true);
     cmd.spawn()
+}
+
+/// Windows `CREATE_NO_WINDOW` process creation flag.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// A command for a console program the app runs in the background (uv,
+/// Python, Ollama, git).
+///
+/// The app is a GUI program (`windows_subsystem = "windows"`), so Windows
+/// gives every console program it starts a console window of its own unless
+/// told not to. Users then see an empty black `uv.exe` window, and closing it
+/// kills what runs inside: for `uv run jarvis serve`, the JARVIS server, after
+/// which every request fails. The output is captured or discarded anyway.
+/// Children of a hidden console (Python under `uv run`) inherit it, so they
+/// stay hidden too.
+fn background_command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = tokio::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// [`background_command`] for a quick synchronous probe (`where`, `wmic`).
+#[cfg(target_os = "windows")]
+fn background_std_command(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
 /// Rolling buffer holding the most recent ~16 KB of jarvis stderr.
@@ -1042,7 +1074,7 @@ async fn verify_openjarvis_rust_extension(
     root: &std::path::Path,
     uv_bin: &str,
 ) -> Result<(), String> {
-    let mut cmd = tokio::process::Command::new(uv_bin);
+    let mut cmd = background_command(uv_bin);
     cmd.args(["run", "python", "-c", "import openjarvis_rust"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -1133,7 +1165,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
         // Try the bundled sidecar first, fall back to system ollama
         let ollama_child = {
             let ollama_bin = resolve_bin("ollama");
-            let mut sidecar_cmd = tokio::process::Command::new(&ollama_bin);
+            let mut sidecar_cmd = background_command(&ollama_bin);
             sidecar_cmd
                 .arg("serve")
                 .env("OLLAMA_HOST", format!("127.0.0.1:{}", OLLAMA_PORT))
@@ -1362,7 +1394,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
             s.detail = "Downloading OpenJarvis (first launch)...".into();
         }
 
-        let mut clone_cmd = tokio::process::Command::new(&git_bin);
+        let mut clone_cmd = background_command(&git_bin);
         clone_cmd
             .args([
                 "clone",
@@ -1580,7 +1612,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                     (uv sync, first launch can take several minutes)..."
             .into();
     }
-    let mut sync_cmd = tokio::process::Command::new(&uv_bin);
+    let mut sync_cmd = background_command(&uv_bin);
     sync_cmd
         .args([
             "sync",
@@ -1631,7 +1663,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
         s.detail = format!("Starting API server from {}...", root.display());
     }
 
-    let mut cmd = tokio::process::Command::new(&uv_bin);
+    let mut cmd = background_command(&uv_bin);
     let mut serve_argv: Vec<String> = vec![
         "run".into(),
         "jarvis".into(),
@@ -2024,7 +2056,7 @@ async fn run_jarvis_command(args: Vec<String>) -> Result<String, String> {
     let mut cmd_args = vec!["run".to_string(), "jarvis".to_string()];
     cmd_args.extend(args.iter().cloned());
 
-    let mut cmd = tokio::process::Command::new(&uv_bin);
+    let mut cmd = background_command(&uv_bin);
     cmd.args(&cmd_args);
     // Run from the project root so `uv run jarvis` resolves the OpenJarvis
     // project regardless of the app's launch cwd. In a packaged install the
