@@ -196,6 +196,33 @@ fn boot_plan(cfg: &InferenceConfig, ram_gb: f64) -> BootPlan {
                 ],
             }
         }
+        SourceKind::Cloud => {
+            // A cloud API key is the brain: never start Ollama, never
+            // download a model. JARVIS uses the chosen provider's default
+            // model (Gemini: Flash-Lite, the largest free quota) unless the
+            // config pins one.
+            let mut serve_args: Vec<String> = vec!["--engine".into(), "cloud".into()];
+            match cfg.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                Some(model) => {
+                    serve_args.push("--model".into());
+                    serve_args.push(model.to_string());
+                }
+                None => {
+                    if let Some(provider) = cloud_provider(cfg) {
+                        serve_args.push("--brain".into());
+                        serve_args.push(provider.name.to_string());
+                    }
+                }
+            }
+            serve_args.push("--agent".into());
+            serve_args.push(DESKTOP_AGENT.into());
+            BootPlan {
+                launch_ollama: false,
+                model_to_pull: None,
+                engine_host: None,
+                serve_args,
+            }
+        }
     }
 }
 
@@ -599,6 +626,7 @@ impl SetupStatus {
             source: match cfg.kind {
                 SourceKind::Ollama => "ollama",
                 SourceKind::Custom => "custom",
+                SourceKind::Cloud => "cloud",
             }
             .into(),
             requires_source: false,
@@ -1145,6 +1173,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
         s.source = match cfg.kind {
             SourceKind::Ollama => "ollama",
             SourceKind::Custom => "custom",
+            SourceKind::Cloud => "cloud",
         }
         .into();
     }
@@ -1275,6 +1304,31 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
             let mut s = status.lock().await;
             s.model_ready = true;
             s.detail = "Model ready.".into();
+        }
+    } else if matches!(cfg.kind, SourceKind::Cloud) {
+        // Cloud brain: never start Ollama, never download a model. Fail
+        // early, with the fix, when the chosen provider has no saved key.
+        let provider = cloud_provider(&cfg);
+        let label = provider.map(|p| p.label).unwrap_or("cloud AI");
+        {
+            let mut s = status.lock().await;
+            s.phase = "model".into();
+            s.detail = format!("Checking your {} API key...", label);
+        }
+        if !cloud_key_saved(provider, &cloud_keys_for_inference(&cfg)) {
+            let mut s = status.lock().await;
+            s.error = Some(format!(
+                "No {} API key is saved. Choose Change inference source below and paste \
+                 your key (a free Gemini key: https://aistudio.google.com/api-keys).",
+                label
+            ));
+            return;
+        }
+        {
+            let mut s = status.lock().await;
+            s.ollama_ready = true;
+            s.model_ready = true;
+            s.detail = format!("Using your {} key. Ollama stays off.", label);
         }
     } else {
         // Custom OpenAI-compatible endpoint: never start Ollama, never download.
@@ -2535,8 +2589,11 @@ async fn get_inference_source() -> Result<InferenceConfig, String> {
 }
 
 /// Persist the chosen inference source. `host` is normalized to a bare base
-/// URL. For custom endpoints, an optional API key is stored in secure desktop
-/// storage under `<ENGINE>_API_KEY`. Applies on next app launch.
+/// URL. An optional API key is stored in secure desktop storage: under
+/// `<ENGINE>_API_KEY` for a custom endpoint, or the provider's key (e.g.
+/// `GEMINI_API_KEY`, the one Settings → API Keys uses) for a cloud source,
+/// which also needs one already saved when none is given. Applies on next
+/// app launch.
 #[tauri::command]
 async fn set_inference_source(
     kind: String,
@@ -2549,6 +2606,7 @@ async fn set_inference_source(
     let kind = match kind.as_str() {
         "ollama" => SourceKind::Ollama,
         "custom" => SourceKind::Custom,
+        "cloud" => SourceKind::Cloud,
         other => return Err(format!("Unknown inference source kind: {:?}", other)),
     };
     let cfg = InferenceConfig {
@@ -2567,6 +2625,17 @@ async fn set_inference_source(
         }
         if cfg.model.as_deref().unwrap_or("").is_empty() {
             return Err("A model name is required for a custom endpoint.".into());
+        }
+    }
+    if let SourceKind::Cloud = cfg.kind {
+        let Some(provider) = cloud_provider(&cfg) else {
+            return Err(
+                "Choose Google Gemini, OpenAI, Anthropic Claude, or OpenRouter.".into(),
+            );
+        };
+        // A key typed now, or one already saved under Settings → API Keys.
+        if api_key.is_none() && !cloud_key_saved(Some(provider), &read_cloud_keys()) {
+            return Err(format!("Paste your {} API key.", provider.label));
         }
     }
 
@@ -2616,11 +2685,90 @@ async fn delete_ollama_model(model_name: String) -> Result<serde_json::Value, St
 enum SourceKind {
     Ollama,
     Custom,
+    /// A cloud API key (Gemini, OpenAI, ...) is JARVIS's brain. Ollama never
+    /// starts and no model is downloaded.
+    Cloud,
 }
 
 impl Default for SourceKind {
     fn default() -> Self {
         SourceKind::Ollama
+    }
+}
+
+/// A cloud brain the desktop app can be set up with. `name` is the
+/// provider's `jarvis serve --brain` value (see `cli/_jarvis_brain.py`);
+/// `key_names` are the secure-store keys it reads, the first being where a
+/// key entered at setup is saved (the same one Settings → API Keys uses).
+struct CloudProvider {
+    name: &'static str,
+    label: &'static str,
+    key_names: &'static [&'static str],
+}
+
+const CLOUD_PROVIDERS: &[CloudProvider] = &[
+    CloudProvider {
+        name: "gemini",
+        label: "Google Gemini",
+        key_names: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    },
+    CloudProvider {
+        name: "openai",
+        label: "OpenAI",
+        key_names: &["OPENAI_API_KEY"],
+    },
+    CloudProvider {
+        name: "anthropic",
+        label: "Anthropic Claude",
+        key_names: &["ANTHROPIC_API_KEY"],
+    },
+    CloudProvider {
+        name: "openrouter",
+        label: "OpenRouter",
+        key_names: &["OPENROUTER_API_KEY"],
+    },
+];
+
+/// The provider a cloud config without one uses: Gemini has a free key.
+const DEFAULT_CLOUD_PROVIDER: &str = "gemini";
+
+/// The provider a cloud source names in its `engine` field, if known.
+fn cloud_provider(cfg: &InferenceConfig) -> Option<&'static CloudProvider> {
+    let name = cfg
+        .engine
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(DEFAULT_CLOUD_PROVIDER);
+    CLOUD_PROVIDERS.iter().find(|provider| provider.name == name)
+}
+
+/// True when `keys` hold a non-empty key the provider can use (any cloud
+/// provider's key when `provider` is None).
+fn cloud_key_saved(provider: Option<&CloudProvider>, keys: &[(String, String)]) -> bool {
+    let wanted: Vec<&str> = match provider {
+        Some(provider) => provider.key_names.to_vec(),
+        None => CLOUD_PROVIDERS
+            .iter()
+            .flat_map(|provider| provider.key_names.iter().copied())
+            .collect(),
+    };
+    keys.iter()
+        .any(|(name, value)| !value.trim().is_empty() && wanted.contains(&name.as_str()))
+}
+
+/// The secure-store key an API key entered with this source is saved under:
+/// `<ENGINE>_API_KEY` for a custom endpoint, the provider's key (e.g.
+/// GEMINI_API_KEY) for a cloud brain. Ollama takes no key.
+fn inference_credential_key(cfg: &InferenceConfig) -> Option<String> {
+    match cfg.kind {
+        SourceKind::Ollama => None,
+        SourceKind::Custom => Some(engine_api_key_name(
+            cfg.engine.as_deref().unwrap_or(CUSTOM_FALLBACK_ENGINE),
+        )),
+        SourceKind::Cloud => {
+            cloud_provider(cfg).map(|provider| provider.key_names[0].to_string())
+        }
     }
 }
 
@@ -2637,7 +2785,8 @@ struct InferenceConfig {
     /// Bare base URL (no trailing `/v1`), custom only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     host: Option<String>,
-    /// OpenAI-compatible engine key (e.g. "lmstudio"), custom only.
+    /// Custom: the OpenAI-compatible engine key (e.g. "lmstudio").
+    /// Cloud: the provider (e.g. "gemini"; see `CLOUD_PROVIDERS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine: Option<String>,
 }
@@ -2668,13 +2817,10 @@ struct PendingInferenceCredential {
 
 impl PendingInferenceCredential {
     fn for_config(cfg: &InferenceConfig) -> Option<Self> {
-        if cfg.confirmed || !matches!(cfg.kind, SourceKind::Custom) {
+        if cfg.confirmed {
             return None;
         }
-        let engine = cfg.engine.as_deref().unwrap_or(CUSTOM_FALLBACK_ENGINE);
-        Some(Self {
-            target_key: engine_api_key_name(engine),
-        })
+        inference_credential_key(cfg).map(|target_key| Self { target_key })
     }
 }
 
@@ -2705,9 +2851,7 @@ fn persist_confirmed_inference_config_at(
     let Some(api_key) = api_key else {
         return write_inference_config_at(cfg, path);
     };
-    let Some(target_key) = (matches!(cfg.kind, SourceKind::Custom))
-        .then(|| engine_api_key_name(cfg.engine.as_deref().unwrap_or(CUSTOM_FALLBACK_ENGINE)))
-    else {
+    let Some(target_key) = inference_credential_key(cfg) else {
         return write_inference_config_at(cfg, path);
     };
 
@@ -2751,7 +2895,7 @@ fn stage_pending_inference_config_at(
     store
         .set(PENDING_INFERENCE_API_KEY, "")
         .map_err(|err| format!("Could not clear a pending API key: {}", err))?;
-    if matches!(cfg.kind, SourceKind::Custom) {
+    if inference_credential_key(cfg).is_some() {
         if let Some(api_key) = api_key {
             store
                 .set(PENDING_INFERENCE_API_KEY, api_key)
@@ -3576,7 +3720,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        boot_plan, default_local_model, discard_pending_inference_setup_at,
+        boot_plan, cloud_key_saved, cloud_provider, default_local_model,
+        discard_pending_inference_setup_at, inference_credential_key,
         format_extension_import_failure, format_missing_rust_toolchain, format_port_unavailable,
         format_uv_sync_failure, format_uv_sync_spawn_error, managed_cloud_key_names,
         matching_installed_model, model_names_match, normalize_host,
@@ -4065,6 +4210,198 @@ mod tests {
         };
         let plan = boot_plan(&cfg, 16.0);
         assert!(plan.engine_host.is_none());
+    }
+
+    fn args_of(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn boot_plan_cloud_never_starts_ollama_or_downloads() {
+        let cfg = InferenceConfig {
+            kind: SourceKind::Cloud,
+            engine: Some("gemini".into()),
+            ..Default::default()
+        };
+        let plan = boot_plan(&cfg, 8.0);
+        assert!(!plan.launch_ollama);
+        assert!(plan.model_to_pull.is_none());
+        assert!(plan.engine_host.is_none());
+        assert_eq!(
+            plan.serve_args,
+            args_of(&["--engine", "cloud", "--brain", "gemini", "--agent", "jarvis"])
+        );
+    }
+
+    #[test]
+    fn boot_plan_cloud_uses_the_chosen_provider_or_a_pinned_model() {
+        let unnamed = InferenceConfig {
+            kind: SourceKind::Cloud,
+            ..Default::default()
+        };
+        assert_eq!(
+            boot_plan(&unnamed, 8.0).serve_args,
+            args_of(&["--engine", "cloud", "--brain", "gemini", "--agent", "jarvis"])
+        );
+
+        let openai = InferenceConfig {
+            kind: SourceKind::Cloud,
+            engine: Some("openai".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            boot_plan(&openai, 8.0).serve_args,
+            args_of(&["--engine", "cloud", "--brain", "openai", "--agent", "jarvis"])
+        );
+
+        let pinned = InferenceConfig {
+            kind: SourceKind::Cloud,
+            engine: Some("gemini".into()),
+            model: Some("gemini-3.8-flash".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            boot_plan(&pinned, 8.0).serve_args,
+            args_of(&[
+                "--engine",
+                "cloud",
+                "--model",
+                "gemini-3.8-flash",
+                "--agent",
+                "jarvis"
+            ])
+        );
+    }
+
+    #[test]
+    fn setup_api_key_goes_to_the_sources_own_key() {
+        let gemini = InferenceConfig {
+            kind: SourceKind::Cloud,
+            engine: Some("gemini".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            inference_credential_key(&gemini).as_deref(),
+            Some("GEMINI_API_KEY")
+        );
+        let anthropic = InferenceConfig {
+            kind: SourceKind::Cloud,
+            engine: Some("anthropic".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            inference_credential_key(&anthropic).as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
+        let unknown = InferenceConfig {
+            kind: SourceKind::Cloud,
+            engine: Some("skynet".into()),
+            ..Default::default()
+        };
+        assert_eq!(inference_credential_key(&unknown), None);
+        assert_eq!(inference_credential_key(&InferenceConfig::default()), None);
+        let custom = InferenceConfig {
+            kind: SourceKind::Custom,
+            engine: Some("vllm".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            inference_credential_key(&custom).as_deref(),
+            Some("VLLM_API_KEY")
+        );
+    }
+
+    #[test]
+    fn cloud_key_check_looks_for_the_chosen_providers_key() {
+        let keys = vec![
+            ("GOOGLE_API_KEY".to_string(), "AIza-test".to_string()),
+            ("OPENAI_API_KEY".to_string(), "  ".to_string()),
+        ];
+        let gemini = cloud_provider(&InferenceConfig {
+            kind: SourceKind::Cloud,
+            ..Default::default()
+        });
+        let openai = cloud_provider(&InferenceConfig {
+            kind: SourceKind::Cloud,
+            engine: Some("openai".into()),
+            ..Default::default()
+        });
+        assert_eq!(gemini.map(|provider| provider.name), Some("gemini"));
+        assert!(cloud_key_saved(gemini, &keys));
+        assert!(!cloud_key_saved(openai, &keys), "a blank key is not a key");
+        assert!(cloud_key_saved(None, &keys));
+        assert!(!cloud_key_saved(None, &[]));
+    }
+
+    #[test]
+    fn cloud_source_round_trips_through_inference_json() {
+        let cfg =
+            parse_configured_inference_config(r#"{"kind":"cloud","engine":"gemini"}"#).unwrap();
+        assert!(matches!(cfg.kind, SourceKind::Cloud));
+        assert!(cfg.confirmed);
+        assert_eq!(cfg.engine.as_deref(), Some("gemini"));
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["kind"].as_str(), Some("cloud"));
+        assert_eq!(SetupStatus::starting(&cfg).source, "cloud");
+    }
+
+    #[test]
+    fn pending_cloud_key_is_promoted_to_the_providers_key_at_confirmation() {
+        let root = unique_test_root("stage-cloud-key");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("inference.json");
+        let store = std::sync::Arc::new(MemoryCredentialStore::default());
+        let mut cfg = InferenceConfig {
+            kind: SourceKind::Cloud,
+            confirmed: false,
+            model: None,
+            host: None,
+            engine: Some("gemini".into()),
+        };
+        stage_pending_inference_config_at(&cfg, Some("AIza-new"), store.as_ref(), &path)
+            .unwrap();
+        assert_eq!(
+            store.value(PENDING_INFERENCE_API_KEY).as_deref(),
+            Some("AIza-new")
+        );
+        assert_eq!(store.value("GEMINI_API_KEY"), None);
+
+        {
+            let mut rollback =
+                PendingInferenceRollback::at_path_with_store(&cfg, path.clone(), store.clone());
+            rollback.confirm(&mut cfg).unwrap();
+        }
+
+        assert!(cfg.confirmed);
+        assert_eq!(store.value(PENDING_INFERENCE_API_KEY), None);
+        assert_eq!(store.value("GEMINI_API_KEY").as_deref(), Some("AIza-new"));
+        let saved: InferenceConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(matches!(saved.kind, SourceKind::Cloud));
+        assert_eq!(saved.engine.as_deref(), Some("gemini"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_cloud_source_saves_its_key_under_the_providers_key() {
+        let root = unique_test_root("persist-cloud-key");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("inference.json");
+        let store = MemoryCredentialStore::default();
+        let cfg = InferenceConfig {
+            kind: SourceKind::Cloud,
+            confirmed: true,
+            model: None,
+            host: None,
+            engine: Some("openai".into()),
+        };
+        persist_confirmed_inference_config_at(&cfg, Some("sk-new"), &store, &path).unwrap();
+        assert_eq!(store.value("OPENAI_API_KEY").as_deref(), Some("sk-new"));
+        assert_eq!(store.value(PENDING_INFERENCE_API_KEY), None);
+        let saved =
+            parse_configured_inference_config(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(matches!(saved.kind, SourceKind::Cloud));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

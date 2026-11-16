@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Loader2, CheckCircle2, XCircle, Cpu, Server, Database } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Cpu, Server, Database, Cloud, KeyRound } from 'lucide-react';
 import {
   getSetupStatus,
   fetchModels,
@@ -181,7 +181,9 @@ export function SetupScreen({ onReady }: { onReady: () => void }) {
               ? 'Checking your saved setup...'
               : status?.source === 'custom'
                 ? 'Connecting to your AI server...'
-                : 'Setting up your local AI...'}
+                : status?.source === 'cloud'
+                  ? 'Connecting to your cloud AI...'
+                  : 'Setting up your local AI...'}
           </p>
         </div>
 
@@ -193,7 +195,14 @@ export function SetupScreen({ onReady }: { onReady: () => void }) {
                 { key: 'model_ready' as const, label: 'Endpoint', icon: Database, detail: 'Checking endpoint...' },
                 { key: 'server_ready' as const, label: 'API Server', icon: Server, detail: 'Starting server...' },
               ]
-            : STEPS
+            : status?.source === 'cloud'
+              ? [
+                  // A cloud key is the brain: Ollama never starts here.
+                  { key: 'ollama_ready' as const, label: 'AI Brain', icon: Cloud, detail: 'Using your cloud AI key...' },
+                  { key: 'model_ready' as const, label: 'API Key', icon: KeyRound, detail: 'Checking your API key...' },
+                  { key: 'server_ready' as const, label: 'API Server', icon: Server, detail: 'Starting JARVIS...' },
+                ]
+              : STEPS
           ).map((step) => (
             <StepRow
               key={step.key}

@@ -25,14 +25,31 @@ backend, and the tools to set it up. You don't need Python, Git or Rust.
    [Build Windows EXE](../development/build-windows-exe.md) run.
 2. Run it. The installer is not code-signed, so if Windows SmartScreen says
    "Windows protected your PC", choose **More info** → **Run anyway**.
-3. Open **OpenJarvis** and keep the local AI option. The first launch installs
-   JARVIS's speech, voice and AI packages and downloads a local model, so it
-   takes a while (it needs internet). Later launches start quickly.
-4. Optional, for a smarter brain: in **Settings**, paste a free Google Gemini
-   key from <https://aistudio.google.com/api-keys> into the **Google** field,
-   then restart the app.
+3. Open **OpenJarvis** and choose JARVIS's brain:
+    - **Cloud AI key (free Gemini)**, best for PCs with 8 GB of memory: pick
+      **Google Gemini (free)** and paste a key from
+      <https://aistudio.google.com/api-keys> (sign in with Google, then
+      **Create API key**). Ollama never starts and no model is downloaded.
+      OpenAI, Anthropic Claude and OpenRouter keys work here too.
+    - **Local Ollama**, fully offline: the first launch downloads a local
+      model of a few gigabytes.
+
+    The first launch also installs JARVIS's speech, voice and AI packages, so
+    it takes a while and needs internet. Later launches start quickly.
+
+4. To switch brains later, open **Settings** → **Inference source**, choose
+   **Cloud AI key** (or **Bundled Ollama**), pick the provider, paste the key,
+   and click **Save inference source**. Then right-click the OpenJarvis tray
+   icon, choose **Quit OpenJarvis**, and open the app again. The JARVIS page
+   shows the brain in use under **Core** → **Brain**, e.g. `gemini-3.5-flash-lite`.
+
 5. Click **JARVIS** in the sidebar, press **Activate**, allow the microphone,
    and say "Jarvis, what time is it?"
+
+!!! tip "Already set up with Local Ollama?"
+    Pasting a key into **Settings** → **API Keys** → **Google** alone does not
+    change JARVIS's brain: an Ollama setup keeps using its local model. Switch
+    the **Inference source** to **Cloud AI key** as in step 4.
 
 The rest of this page sets JARVIS up from a source checkout, which also gives
 you `jarvis listen`, the voice assistant in a terminal.
@@ -188,6 +205,11 @@ OpenRouter, then Ollama (using the best model you have pulled). The default
 models are `gemini-3.5-flash-lite` (the largest free daily quota),
 `gpt-6-luna`, `claude-haiku-4-5` and `openrouter/auto`.
 
+The Windows app's **Cloud AI key** source starts the server as
+`jarvis serve --engine cloud --brain gemini --agent jarvis` (or the provider
+you picked), with your key from Windows' secure storage. `--brain` takes the
+same values as `brain` above; `--engine cloud` keeps Ollama out of it.
+
 His voice comes from `[speech]`: `tts_backend = "kokoro"` with `voice_id` set
 to `bm_george`, `bm_lewis`, `bf_emma` or `bf_isabella`.
 
@@ -212,9 +234,12 @@ to `bm_george`, `bm_lewis`, `bf_emma` or `bf_isabella`.
 | He never hears "Jarvis" | Windows Settings → Privacy & security → Microphone: allow desktop apps. Run with `--verbose-heard` to see what he hears |
 | He reacts to background noise | Set `mic_threshold` higher (e.g. `1200`); `0` re-enables calibration |
 | No voice | Run the full `uv sync` command from step 1 and restart the server |
-| "My offline brain needs more free memory than this PC has right now" | Ollama could not load the model, even after JARVIS shrank its context (it does so automatically). Close memory-hungry programs such as browser tabs, or add a free Gemini key (step 4 of the Windows app, or step 2 here) so JARVIS stops needing a local model |
+| "My offline brain needs more free memory than this PC has right now" | Ollama could not load the model, even after JARVIS shrank its context (it does so automatically). Close memory-hungry programs such as browser tabs, or switch to a free Gemini key (step 4 of the Windows app, or step 2 here) so JARVIS stops needing a local model |
 | "My offline brain, Ollama, isn't responding" | Restart the app, or run `ollama serve` |
-| "My offline brain couldn't start its model", or `llama-server binary not found` on screen | Ollama is missing its model runtime (`lib\ollama` beside `ollama.exe`). Windows installers before 1.0.3 left it out: install the latest one (quit OpenJarvis from its tray icon first), or add a free Gemini key in Settings → Google and restart the app |
+| "My offline brain couldn't start its model", or `llama-server binary not found` on screen | Ollama is missing its model runtime (`lib\ollama` beside `ollama.exe`). Windows installers before 1.0.3 left it out: install the latest one (quit OpenJarvis from its tray icon first), or switch to a free Gemini key in Settings → Inference source → Cloud AI key and restart the app |
+| "No Google Gemini API key is saved" while the app starts | Choose **Change inference source** and paste your key again |
+| "My API key was rejected" | The key is mistyped, deleted or restricted. Create a new one at <https://aistudio.google.com/api-keys>, paste it in Settings → Inference source → Cloud AI key, save, and restart the app |
+| The JARVIS page shows a `qwen` model under Core → Brain although you saved a Gemini key | The app still uses Local Ollama. Switch the inference source as in step 4 of the Windows app |
 | "I can't reach my brain right now" | The JARVIS server is not running. In the Windows app, restart it. From source, start it with `jarvis serve`, or use `jarvis gui --hud` |
 | HUD says the server is offline | Start it with `jarvis serve`, or use `jarvis gui --hud` |
 | "API port 8000 is already serving an unregistered service" | You already ran `jarvis serve`; use `jarvis gui --hud --no-server` |

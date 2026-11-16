@@ -137,7 +137,7 @@ export interface SetupStatus {
   server_ready: boolean;
   model_ready: boolean;
   error: string | null;
-  source: 'unconfigured' | 'ollama' | 'custom';
+  source: 'unconfigured' | 'ollama' | 'custom' | 'cloud';
   requires_source: boolean;
 }
 
@@ -1195,9 +1195,11 @@ export async function denyAction(actionId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export type InferenceSource = {
-  kind: 'ollama' | 'custom';
+  /** `cloud`: an API key (Gemini, OpenAI, ...) is the brain; Ollama stays off. */
+  kind: 'ollama' | 'custom' | 'cloud';
   model?: string;
   host?: string;
+  /** Custom: the OpenAI-compatible server type. Cloud: the provider, e.g. `gemini`. */
   engine?: string;
 };
 

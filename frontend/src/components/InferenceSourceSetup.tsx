@@ -1,5 +1,5 @@
 import { useReducer, useState, type FormEvent } from 'react';
-import { ArrowLeft, Cpu, Download, Loader2, Server, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Cpu, Download, KeyRound, Loader2, Server, ShieldCheck } from 'lucide-react';
 import {
   resetInferenceSource,
   stageInferenceSource,
@@ -7,9 +7,48 @@ import {
   type InferenceSource,
 } from '../lib/api';
 
-export type InferenceSetupStep = 'choose' | 'ollama' | 'custom';
-export type InferenceSetupAction = 'choose_ollama' | 'choose_custom' | 'back';
+export type InferenceSetupStep = 'choose' | 'ollama' | 'custom' | 'cloud';
+export type InferenceSetupAction = 'choose_ollama' | 'choose_custom' | 'choose_cloud' | 'back';
 export type InferenceSourceSubmission = InferenceSource & { apiKey?: string };
+export type InferenceSourceKind = InferenceSource['kind'];
+
+/** Cloud brains JARVIS can use; `id` is the provider the desktop app saves. */
+export const CLOUD_PROVIDERS = [
+  {
+    id: 'gemini',
+    label: 'Google Gemini (free)',
+    placeholder: 'AIza...',
+    keyUrl: 'https://aistudio.google.com/api-keys',
+    hint: 'Free: sign in with Google and choose Create API key.',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    placeholder: 'sk-...',
+    keyUrl: 'https://platform.openai.com/api-keys',
+    hint: 'Paid: usage is billed to your OpenAI account.',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic Claude',
+    placeholder: 'sk-ant-...',
+    keyUrl: 'https://console.anthropic.com/settings/keys',
+    hint: 'Paid: usage is billed to your Anthropic account.',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    placeholder: 'sk-or-...',
+    keyUrl: 'https://openrouter.ai/keys',
+    hint: 'One key for many models; usage is billed by OpenRouter.',
+  },
+] as const;
+
+export type CloudProviderId = (typeof CLOUD_PROVIDERS)[number]['id'];
+
+export function cloudProvider(id: string | undefined) {
+  return CLOUD_PROVIDERS.find((provider) => provider.id === id) ?? CLOUD_PROVIDERS[0];
+}
 
 /** Pure navigation state: merely inspecting a source can never start setup. */
 export function inferenceSetupReducer(
@@ -21,12 +60,20 @@ export function inferenceSetupReducer(
       return 'ollama';
     case 'choose_custom':
       return 'custom';
+    case 'choose_cloud':
+      return 'cloud';
     case 'back':
       return 'choose';
     default:
       return state;
   }
 }
+
+const CHOOSE_ACTIONS: Record<InferenceSourceKind, InferenceSetupAction> = {
+  ollama: 'choose_ollama',
+  custom: 'choose_custom',
+  cloud: 'choose_cloud',
+};
 
 /**
  * Persist first, start second. Dependency injection keeps the consent boundary
@@ -83,11 +130,27 @@ function SetupFrame({ children }: { children: React.ReactNode }) {
 export function InferenceSourceChooser({
   onChoose,
 }: {
-  onChoose: (source: 'ollama' | 'custom') => void;
+  onChoose: (source: InferenceSourceKind) => void;
 }) {
   return (
     <SetupFrame>
       <div className="flex flex-col gap-3">
+        <button
+          type="button"
+          onClick={() => onChoose('cloud')}
+          className="flex items-start gap-4 p-4 rounded-xl text-left transition-all cursor-pointer"
+          style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
+        >
+          <KeyRound size={22} className="shrink-0 mt-0.5" style={{ color: 'var(--color-accent)' }} />
+          <span>
+            <span className="block text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
+              Cloud AI key (free Gemini)
+            </span>
+            <span className="block text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+              Paste a free Google Gemini key, or an OpenAI, Claude, or OpenRouter key. Nothing is downloaded and Ollama stays off, so it suits PCs with 8 GB of memory.
+            </span>
+          </span>
+        </button>
         <button
           type="button"
           onClick={() => onChoose('ollama')}
@@ -340,6 +403,102 @@ export function CustomEndpointSetup({
   );
 }
 
+export function CloudKeySetup({
+  onCancel,
+  onConfirm,
+  busy = false,
+  error = '',
+}: {
+  onCancel: () => void;
+  onConfirm: (source: InferenceSourceSubmission) => void;
+  busy?: boolean;
+  error?: string;
+}) {
+  const [provider, setProvider] = useState<CloudProviderId>('gemini');
+  const [apiKey, setApiKey] = useState('');
+  const info = cloudProvider(provider);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    onConfirm({ kind: 'cloud', engine: provider, apiKey: apiKey.trim() });
+  };
+
+  const fieldStyle = {
+    background: 'var(--color-surface)',
+    color: 'var(--color-text)',
+    border: '1px solid var(--color-border)',
+  };
+
+  return (
+    <SetupFrame>
+      <BackButton onClick={onCancel} label="Cancel" disabled={busy} />
+      <form onSubmit={submit} className="flex flex-col gap-4">
+        <div>
+          <h2 className="text-base font-semibold mb-1" style={{ color: 'var(--color-text)' }}>
+            Use a cloud AI key
+          </h2>
+          <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+            JARVIS will think with this provider's AI. Ollama will not start or download models. Your key is kept in this PC's secure storage.
+          </p>
+        </div>
+        <label className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+          Provider
+          <select
+            aria-label="Provider"
+            value={provider}
+            onChange={(event) => setProvider(event.target.value as CloudProviderId)}
+            className="block w-full mt-1.5 px-3 py-2 rounded-lg text-sm outline-none"
+            style={fieldStyle}
+          >
+            {CLOUD_PROVIDERS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+          API key
+          <input
+            aria-label="API key"
+            type="password"
+            required
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={info.placeholder}
+            autoComplete="off"
+            spellCheck={false}
+            className="block w-full mt-1.5 px-3 py-2 rounded-lg text-sm outline-none"
+            style={fieldStyle}
+          />
+        </label>
+        <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+          {info.hint} Get a key at{' '}
+          <a
+            href={info.keyUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: 'var(--color-accent)', textDecoration: 'underline' }}
+          >
+            {info.keyUrl.replace('https://', '')}
+          </a>
+          .
+        </p>
+        {error && <SetupError message={error} />}
+        <button
+          type="submit"
+          disabled={busy || !apiKey.trim()}
+          className="w-full py-3 px-4 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+          style={{ background: 'var(--color-accent)', color: 'white' }}
+        >
+          {busy && <Loader2 size={16} className="animate-spin" />}
+          {busy ? 'Starting JARVIS...' : 'Save key and start'}
+        </button>
+      </form>
+    </SetupFrame>
+  );
+}
+
 export function InferenceSourceSetup({ onStarted }: { onStarted: () => void }) {
   const [step, dispatch] = useReducer(inferenceSetupReducer, 'choose');
   const [busy, setBusy] = useState(false);
@@ -377,9 +536,15 @@ export function InferenceSourceSetup({ onStarted }: { onStarted: () => void }) {
       />
     );
   }
-  return (
-    <InferenceSourceChooser
-      onChoose={(source) => dispatch(source === 'ollama' ? 'choose_ollama' : 'choose_custom')}
-    />
-  );
+  if (step === 'cloud') {
+    return (
+      <CloudKeySetup
+        busy={busy}
+        error={error}
+        onCancel={() => dispatch('back')}
+        onConfirm={(source) => void begin(source)}
+      />
+    );
+  }
+  return <InferenceSourceChooser onChoose={(source) => dispatch(CHOOSE_ACTIONS[source])} />;
 }

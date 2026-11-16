@@ -1,10 +1,13 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CLOUD_PROVIDERS,
+  CloudKeySetup,
   CustomEndpointSetup,
   InferenceRecoveryButton,
   InferenceSourceChooser,
   OllamaConsent,
+  cloudProvider,
   inferenceSetupReducer,
   persistAndStartInferenceSource,
   type InferenceSourceSubmission,
@@ -21,9 +24,16 @@ describe('first-run inference source navigation', () => {
     expect(inferenceSetupReducer('custom', 'back')).toBe('choose');
   });
 
-  it('renders both sources without claiming either has started', () => {
+  it('opens the cloud key form and cancels back without saving', () => {
+    expect(inferenceSetupReducer('choose', 'choose_cloud')).toBe('cloud');
+    expect(inferenceSetupReducer('cloud', 'back')).toBe('choose');
+  });
+
+  it('renders every source without claiming any has started', () => {
     const html = renderToStaticMarkup(<InferenceSourceChooser onChoose={vi.fn()} />);
 
+    expect(html).toContain('Cloud AI key (free Gemini)');
+    expect(html).toContain('Ollama stays off');
     expect(html).toContain('Local Ollama');
     expect(html).toContain('OpenAI-compatible server');
     expect(html).toContain('Nothing is installed, started, or downloaded until you confirm');
@@ -53,6 +63,32 @@ describe('first-run inference source navigation', () => {
     expect(html).toMatch(/aria-label="Model ID"[^>]*required/);
     expect(html).toContain('Ollama will not start or download models');
     expect(html).toContain('Cancel');
+  });
+
+  it('asks for a Gemini key by default, with where to get one free', () => {
+    const html = renderToStaticMarkup(<CloudKeySetup onCancel={vi.fn()} onConfirm={vi.fn()} />);
+
+    expect(html).toContain('Use a cloud AI key');
+    expect(html).toMatch(/<option value="gemini" selected="">Google Gemini \(free\)<\/option>/);
+    expect(html).toMatch(/aria-label="API key"[^>]*required/);
+    expect(html).toContain('type="password"');
+    expect(html).toContain('href="https://aistudio.google.com/api-keys"');
+    expect(html).toContain('Ollama will not start or download models');
+    expect(html).toContain('Cancel');
+    // Nothing to submit until a key is pasted.
+    expect(html).toMatch(/<button type="submit" disabled=""/);
+  });
+
+  it('offers the cloud brains JARVIS can use, matching the desktop app', () => {
+    expect(CLOUD_PROVIDERS.map((provider) => provider.id)).toEqual([
+      'gemini',
+      'openai',
+      'anthropic',
+      'openrouter',
+    ]);
+    expect(cloudProvider('openai').label).toBe('OpenAI');
+    expect(cloudProvider(undefined).id).toBe('gemini');
+    expect(cloudProvider('unknown').id).toBe('gemini');
   });
 
   it('renders a source-change recovery action with a guarded busy state', () => {
@@ -93,6 +129,25 @@ describe('first-run inference source persistence', () => {
       model: 'local-model',
       engine: 'lmstudio',
     });
+  });
+
+  it('stages a cloud key with its provider before starting', async () => {
+    const calls: string[] = [];
+    const persist = vi.fn(async (source: InferenceSourceSubmission) => {
+      calls.push(`persist:${source.kind}:${source.engine}`);
+    });
+    const start = vi.fn(async () => {
+      calls.push('start');
+    });
+
+    await persistAndStartInferenceSource(
+      { kind: 'cloud', engine: 'gemini', apiKey: 'AIza-test' },
+      persist,
+      start,
+    );
+
+    expect(calls).toEqual(['persist:cloud:gemini', 'start']);
+    expect(persist).toHaveBeenCalledWith({ kind: 'cloud', engine: 'gemini', apiKey: 'AIza-test' });
   });
 
   it('does not start anything when persistence fails', async () => {

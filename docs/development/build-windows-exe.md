@@ -21,8 +21,8 @@ developer tools:
   Ollama can download models but not run them). Models run on the CPU, or on
   the GPU through Vulkan, which works with NVIDIA, AMD and Intel graphics
   drivers. Ollama's NVIDIA CUDA libraries (over 1 GB) are left out to keep the
-  installer small. If a cloud key is saved in Settings (for example a free
-  Gemini key), JARVIS uses that instead.
+  installer small. Ollama is only used for the **Local Ollama** source: with
+  the **Cloud AI key** source (for example a free Gemini key) it never starts.
 
 Because it links Windows system libraries, the installer **must be built on
 Windows**. It cannot be cross-compiled from Linux or macOS.
@@ -52,7 +52,11 @@ workflow is manual and needs **no repository secrets**. It:
    saved memory, opening Notepad). The requests come from the app's webview
    origin and must get CORS headers. The stand-in Ollama only has the free
    memory of a busy 8 GB PC, so the server must shrink the model's context, and
-   a crashing model must reach the app as a readable error;
+   a crashing model must reach the app as a readable error. It then starts the
+   server as the **Cloud AI key** source does (`--engine cloud --brain gemini`)
+   with Ollama off, against a stand-in for Google's Gemini API: JARVIS must
+   answer through Gemini, use a tool, send the key, and report a rejected key
+   readably;
 4. downloads Ollama and stages its model runtime without the CUDA libraries
    (`frontend/src-tauri/scripts/download-ollama.sh`), then runs a real model
    through it with `scripts/desktop/smoke_ollama_runtime.py`: `ollama.exe` and
@@ -174,16 +178,19 @@ later builds are incremental.
 
 ## What happens on first launch
 
-1. The app asks where its AI should run. The default is the bundled Ollama.
-2. It starts Ollama and downloads a local model sized to the PC's memory.
+1. The app asks where its AI should run: **Cloud AI key (free Gemini)**,
+   **Local Ollama**, or an OpenAI-compatible server.
+2. With **Local Ollama**, it starts Ollama and downloads a local model sized to
+   the PC's memory. With a **Cloud AI key**, it saves the key in Windows'
+   secure storage instead; Ollama never starts and nothing is downloaded.
 3. It runs `uv sync --extra jarvis --group desktop-native` in
    `<install dir>\src`. uv downloads Python 3.12 and JARVIS's packages
    (speech recognition, the Kokoro voice, the cloud SDKs), so the first launch
    takes a while; later launches start quickly.
-4. It starts `jarvis serve --agent jarvis`. Unless a model was pinned, JARVIS
-   picks his brain himself: a cloud key saved in **Settings** (Gemini, OpenAI,
-   Anthropic, OpenRouter) if there is one, otherwise the local Ollama model.
-   Restart the app after saving a key.
+4. It starts `jarvis serve --agent jarvis`, with `--engine cloud --brain
+   gemini` (or the chosen provider) for a cloud key. Switch sources later in
+   **Settings** → **Inference source**, then quit the app from its tray icon
+   and reopen it.
 
 Open **JARVIS** in the sidebar for the HUD.
 

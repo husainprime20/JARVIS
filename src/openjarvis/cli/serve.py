@@ -140,6 +140,14 @@ def _resolve_server_model(
     default=None,
     help="Agent for chat requests (simple, orchestrator, react, openhands).",
 )
+@click.option(
+    "--brain",
+    type=click.Choice(
+        ["auto", "gemini", "openai", "anthropic", "openrouter", "ollama"]
+    ),
+    default=None,
+    help="JARVIS mode: which AI answers (default: [jarvis] brain, normally auto).",
+)
 @click.pass_context
 def serve(
     ctx: click.Context,
@@ -148,6 +156,7 @@ def serve(
     engine_key: str | None,
     model_name: str | None,
     agent_name: str | None,
+    brain: str | None,
 ) -> None:
     """Start the OpenAI-compatible API server."""
     print_banner(quiet=(ctx.obj or {}).get("quiet", False))
@@ -196,8 +205,9 @@ def serve(
             logger.debug("Telemetry store init failed: %s", exc)
 
     # JARVIS mode picks its brain (engine + model) the same way as
-    # ``jarvis listen`` -- a Gemini/OpenAI/... key, else local Ollama --
-    # unless a model was chosen explicitly for the server.
+    # ``jarvis listen`` -- a Gemini/OpenAI/... key, else local Ollama, or the
+    # one ``--brain`` names (the desktop app's cloud source passes the
+    # provider chosen at setup) -- unless a model was chosen explicitly.
     if (
         (agent_name or config.server.agent) == "jarvis"
         and not model_name
@@ -213,7 +223,7 @@ def serve(
 
         load_saved_cloud_keys()
         try:
-            brain_choice = select_brain(config, engine_key=engine_key)
+            brain_choice = select_brain(config, brain=brain, engine_key=engine_key)
         except BrainUnavailableError as exc:
             console.print(f"[yellow]{_escape(str(exc))}[/yellow]")
             sys.exit(1)

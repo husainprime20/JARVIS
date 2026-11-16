@@ -175,6 +175,20 @@ describe('helpers', () => {
     );
     expect(friendlyError(new Error('500 429 RESOURCE_EXHAUSTED: quota exceeded'))).toMatch(/usage limit/);
     expect(friendlyError(new Error('500 403 PERMISSION_DENIED'))).toMatch(/API key was rejected/);
+    // What the server reports for a mistyped Gemini key (the cloud source).
+    expect(
+      friendlyError(
+        new Error(
+          "500 400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key not valid. Please pass a valid API key.', 'status': 'INVALID_ARGUMENT'}}",
+        ),
+      ),
+    ).toMatch(/API key was rejected, sir/);
+  });
+
+  it('points offline-brain failures at the cloud source in Settings', () => {
+    const hint = /switch me to a free Gemini key in Settings, under Inference source\./;
+    expect(friendlyError(new Error('500 Ollama returned 500: model requires more system memory (3.1 GiB) than is available (2.4 GiB)'))).toMatch(hint);
+    expect(friendlyError(new Error('500 Ollama returned 500: llama-server binary not found'))).toMatch(hint);
   });
 
   it('does not mistake numbers or words in error details for status codes', () => {

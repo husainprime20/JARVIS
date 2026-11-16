@@ -62,16 +62,23 @@ def served(tmp_path, monkeypatch):
     config.agent.context_from_memory = False
 
     engine = _fake_engine()
-    state: dict = {"brain_calls": [], "engine_models": []}
+    state: dict = {
+        "brain_calls": [],
+        "brains": [],
+        "engine_models": [],
+        "engine_keys": [],
+    }
 
     def fake_select_brain(cfg, *, brain=None, model=None, engine_key=None):
         state["brain_calls"].append(engine_key)
+        state["brains"].append(brain)
         return _jarvis_brain.BrainChoice(
             "gemini", "Google Gemini", "cloud", engine, "gemini-3.5-flash-lite"
         )
 
     def fake_get_engine(cfg, engine_key=None, model=None):
         state["engine_models"].append(model)
+        state["engine_keys"].append(engine_key)
         return ("cloud", engine)
 
     monkeypatch.setattr(_jarvis_brain, "select_brain", fake_select_brain)
@@ -122,6 +129,34 @@ def test_jarvis_agent_gets_brain_and_default_tools(served):
     prompt = agent.compose_system_prompt()
     assert "You are JARVIS" in prompt
     assert "SERVE_JARVIS_SENTINEL" in prompt
+
+
+def test_brain_option_reaches_brain_selection(served):
+    # The desktop app's cloud source: never Ollama, the provider from setup.
+    result, app_kwargs = served["run"](
+        "--agent", "jarvis", "--engine", "cloud", "--brain", "gemini"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert served["brains"] == ["gemini"]
+    assert served["brain_calls"] == ["cloud"]
+    assert served["engine_keys"][0] == "cloud"
+    assert served["engine_models"][0] == "gemini-3.5-flash-lite"
+    assert app_kwargs["agent"]._model == "gemini-3.5-flash-lite"
+
+
+def test_brain_defaults_to_auto_selection(served):
+    result, _ = served["run"]("--agent", "jarvis")
+    assert result.exit_code == 0, result.output
+    assert served["brains"] == [None]
+
+
+def test_unknown_brain_is_rejected(served):
+    result, app_kwargs = served["run"]("--agent", "jarvis", "--brain", "skynet")
+    assert result.exit_code == 2
+    assert "skynet" in result.output
+    assert served["brain_calls"] == []
+    assert "agent" not in app_kwargs
 
 
 def test_agent_from_server_config(served):
