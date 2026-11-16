@@ -11,8 +11,8 @@ name: Build Windows EXE
 #   - the Python backend in <install dir>\src, with a prebuilt openjarvis_rust
 #     wheel, so users need no git, Rust or Visual Studio Build Tools,
 #   - uv (installs Python and the backend's packages on first launch),
-#   - Ollama (the offline brain; a cloud key saved in Settings is used instead
-#     when present).
+#   - Ollama (the offline brain; with the "Cloud AI key" source, e.g. a free
+#     Gemini key, it never starts).
 # Before packaging, the bundled backend is installed exactly as the app will
 # install it and holds a scripted JARVIS conversation (see
 # scripts/desktop/smoke_jarvis_backend.py).
@@ -307,9 +307,11 @@ jobs:
 
           **Install:** download \`$(basename installer/*.exe)\` and run it. The installer is not code-signed, so Windows SmartScreen may say "Windows protected your PC": choose **More info**, then **Run anyway**.
 
-          **First launch** installs JARVIS's speech, voice and AI packages and downloads a local AI model (several GB in total), so it can take a while. Later launches start quickly.
+          **Choose JARVIS's brain** when the app first opens:
+          - **Cloud AI key (free Gemini)**: paste a free key from https://aistudio.google.com/api-keys (OpenAI, Claude and OpenRouter keys work too). Ollama never starts and no model is downloaded, which suits PCs with 8 GB of memory.
+          - **Local Ollama**: fully offline; downloads a local model of a few GB.
 
-          **Brains:** JARVIS uses a cloud key if you save one in Settings (a free Google Gemini key from https://aistudio.google.com/api-keys works), otherwise the offline Ollama model. Restart the app after adding a key.
+          **First launch** also installs JARVIS's speech, voice and AI packages, so it can take a while. Later launches start quickly. To switch brains later, use Settings, Inference source, then quit the app from its tray icon and reopen it.
 
           Open **JARVIS** in the sidebar for the HUD: press Activate and say "Jarvis, what time is it?".
           EOF
