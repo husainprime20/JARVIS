@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUp, Mic, MicOff, Settings2, Trash2, X } from 'lucide-react';
 import { ArcReactor, type ReactorPhase } from '../components/Jarvis/ArcReactor';
-import { ChatPanel } from '../components/jarvis/ChatPanel';
-import { SettingsPanel } from '../components/jarvis/SettingsPanel';
-import { VoiceVisualizer } from '../components/jarvis/VoiceVisualizer';
+import { ChatPanel } from '../components/Jarvis/ChatPanel';
+import { SettingsPanel } from '../components/Jarvis/SettingsPanel';
+import { VoiceVisualizer } from '../components/Jarvis/VoiceVisualizer';
 import { chat, clearHistory, friendlyError, getHealth, getSettings, isDesktop, transcribeAudio, type ChatMessage, type Health } from '../lib/jarvis/api';
 import { JarvisVoice, speechSupported, type VoiceState } from '../lib/jarvis/voice';
 
