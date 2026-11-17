@@ -11,6 +11,14 @@ The Windows EXE workflow runs this on the build machine before packaging:
    speak a sentence in the British voice and transcribe it back (the HUD's
    speech path), and hold a conversation that makes JARVIS use his tools: a
    time zone, saving and recalling a memory, and (on Windows) opening Notepad.
+   Requests come from the app's webview origin and must get CORS headers. The
+   stand-in has the free memory of a busy 8 GB PC, so the server must shrink
+   the model's context, and a crashing model must reach the app as a readable
+   error rather than "Failed to fetch";
+5. start it again the way the app's cloud source does (``--engine cloud
+   --brain gemini`` with the saved key) while Ollama is off, against a scripted
+   stand-in for Google's Gemini API: JARVIS must answer through Gemini, use a
+   tool, send the key, and report a rejected key to the app readably.
 
 Usage::
 
@@ -53,6 +61,28 @@ CLOUD_KEYS = (
     "OPENROUTER_API_KEY",
 )
 STAND_IN_MODEL = "qwen3.5:4b"
+# The stand-in behaves like Ollama on a busy 8 GB PC: it cannot load the model
+# with JARVIS's default 16k context, only with this much or less. The server
+# must shrink the context instead of failing every request.
+STAND_IN_FITTING_CTX = 8192
+LOW_MEMORY_ERROR = (
+    "model requires more system memory (3.1 GiB) than is available (2.4 GiB)"
+)
+# A request containing this makes the stand-in's runner crash, to check that a
+# failing brain reaches the HUD as a readable error.
+CRASH_PHRASE = "simulate a crash"
+CRASH_ERROR = "llama runner process has terminated: exit status 2"
+# The desktop app's webview origin; the server must answer it with CORS headers.
+APP_ORIGIN = "http://tauri.localhost"
+# The cloud source: what the app runs when the user picks a Gemini key at
+# setup. Ollama stays off, so JARVIS must answer through Gemini alone.
+CLOUD_SOURCE_ARGS = ("--engine", "cloud", "--brain", "gemini", "--agent", "jarvis")
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+GEMINI_TEST_KEY = "smoke-test-gemini-key"
+GEMINI_KEY_ERROR = "API key not valid. Please pass a valid API key."
+# A request containing this is refused like a mistyped key, to check that the
+# HUD hears about it instead of "Failed to fetch".
+REJECT_PHRASE = "simulate a rejected key"
 IMPORTS = (
     "openjarvis_rust",
     "faster_whisper",
@@ -135,13 +165,28 @@ def scripted_reply(body: dict[str, Any]) -> dict[str, Any]:
     return {"role": "assistant", "content": "Good evening, sir."}
 
 
+def stand_in_failure(body: dict[str, Any]) -> str | None:
+    """The error the stand-in Ollama answers *body* with, if any."""
+    messages = body.get("messages") or []
+    users = [m for m in messages if m.get("role") == "user"]
+    if users and CRASH_PHRASE in str(users[-1].get("content", "")).lower():
+        return CRASH_ERROR
+    num_ctx = (body.get("options") or {}).get("num_ctx") or 4096
+    if num_ctx > STAND_IN_FITTING_CTX:
+        return LOW_MEMORY_ERROR
+    return None
+
+
 class _StandInOllama(BaseHTTPRequestHandler):
+    # Every /api/chat request as (num_ctx, error or None), for the checks.
+    chats: list[tuple[int | None, str | None]] = []
+
     def log_message(self, *args: Any) -> None:  # keep the CI log readable
         pass
 
-    def _send(self, payload: dict[str, Any]) -> None:
+    def _send(self, payload: dict[str, Any], status: int = 200) -> None:
         data = json.dumps(payload).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -166,6 +211,12 @@ class _StandInOllama(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path.startswith("/api/chat"):
+            error = stand_in_failure(body)
+            num_ctx = (body.get("options") or {}).get("num_ctx")
+            _StandInOllama.chats.append((num_ctx, error))
+            if error:
+                self._send({"error": error}, status=500)
+                return
             self._send(
                 {
                     "model": body.get("model"),
@@ -180,7 +231,100 @@ class _StandInOllama(BaseHTTPRequestHandler):
 
 
 def start_stand_in_ollama() -> tuple[ThreadingHTTPServer, int]:
+    _StandInOllama.chats = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StandInOllama)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, server.server_address[1]
+
+
+def _gemini_answer(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "candidates": [
+            {"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 15,
+        },
+    }
+
+
+def gemini_reply(body: dict[str, Any]) -> dict[str, Any]:
+    """What Gemini would answer, for the cloud-brain conversation below."""
+    contents = body.get("contents") or []
+    parts = (contents[-1].get("parts") if contents else None) or []
+    for part in parts:
+        response = part.get("functionResponse") or part.get("function_response")
+        if response:
+            result = str((response.get("response") or {}).get("result", ""))
+            try:
+                summary = json.loads(result).get("summary") or result
+            except (ValueError, AttributeError):
+                summary = result
+            return _gemini_answer([{"text": f"Certainly, sir. {summary[:400]}"}])
+    text = " ".join(str(part.get("text", "")) for part in parts).lower()
+    declared = {
+        declaration.get("name")
+        for tool in body.get("tools") or []
+        for declaration in (
+            tool.get("functionDeclarations") or tool.get("function_declarations") or []
+        )
+    }
+    if "time" in text and "current_datetime" in declared:
+        call = {"name": "current_datetime", "args": {"timezone": "Asia/Karachi"}}
+        return _gemini_answer([{"functionCall": call}])
+    return _gemini_answer([{"text": "At your service, sir."}])
+
+
+class _StandInGemini(BaseHTTPRequestHandler):
+    """Google's Gemini API, scripted. Records every request for the checks."""
+
+    # Every request as (path, API key sent, body).
+    requests: list[tuple[str, str, dict[str, Any]]] = []
+
+    def log_message(self, *args: Any) -> None:  # keep the CI log readable
+        pass
+
+    def _send(self, payload: dict[str, Any], status: int = 200) -> None:
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _error(self, status: int, message: str, reason: str) -> None:
+        self._send(
+            {"error": {"code": status, "message": message, "status": reason}},
+            status=status,
+        )
+
+    def do_GET(self) -> None:  # noqa: N802 (http.server API)
+        _StandInGemini.requests.append(
+            (self.path, self.headers.get("x-goog-api-key") or "", {})
+        )
+        self._error(404, f"The stand-in does not serve GET {self.path}", "NOT_FOUND")
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server API)
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        key = self.headers.get("x-goog-api-key") or ""
+        _StandInGemini.requests.append((self.path, key, body))
+        if not self.path.startswith(f"/v1beta/models/{GEMINI_MODEL}:generateContent"):
+            self._error(404, f"Unexpected request {self.path}", "NOT_FOUND")
+            return
+        users = [c for c in body.get("contents") or [] if c.get("role") == "user"]
+        last_user = json.dumps(users[-1]).lower() if users else ""
+        if key != GEMINI_TEST_KEY or REJECT_PHRASE in last_user:
+            self._error(400, GEMINI_KEY_ERROR, "INVALID_ARGUMENT")
+            return
+        self._send(gemini_reply(body))
+
+
+def start_stand_in_gemini() -> tuple[ThreadingHTTPServer, int]:
+    _StandInGemini.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StandInGemini)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, server.server_address[1]
 
@@ -220,6 +364,37 @@ def http_post_bytes(
         return response.read(), dict(response.headers.items())
 
 
+def hud_chat(
+    base: str, model: str, text: str, timeout: float = 180
+) -> tuple[int, dict[str, str], Any]:
+    """One turn as the JARVIS HUD sends it: non-streaming, from the app origin.
+
+    Returns ``(status, headers, body)`` for error replies too, since the HUD
+    reads those: a failed request must still be JSON with CORS headers.
+    """
+    request = urllib.request.Request(
+        f"{base}/v1/chat/completions",
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": text}],
+                "stream": False,
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Origin": APP_ORIGIN},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status, headers, raw = response.status, response.headers, response.read()
+    except urllib.error.HTTPError as exc:
+        status, headers, raw = exc.code, exc.headers, exc.read()
+    try:
+        body: Any = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        body = raw.decode("utf-8", errors="replace")
+    return status, {k.lower(): v for k, v in headers.items()}, body
+
+
 def multipart(fields: dict[str, str], file_name: str, data: bytes) -> tuple[bytes, str]:
     boundary = "jarvis-smoke-boundary"
     parts = []
@@ -257,6 +432,7 @@ def run(
 
 def backend_env(home: Path, *, utf8: bool = True) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in CLOUD_KEYS}
+    env.pop("JARVIS_NUM_CTX", None)  # the app's default context, as on a PC
     env["OPENJARVIS_HOME"] = str(home)
     env.pop("VIRTUAL_ENV", None)
     if utf8:
@@ -378,6 +554,174 @@ def check_voice(base: str, server_log: Any) -> None:
         report_warning("speech", f"Transcript differs from {sentence!r}: {heard!r}")
 
 
+def check_low_memory_fallback(chats: list[tuple[int | None, str | None]]) -> None:
+    """The server shrank the context when the model did not fit in memory."""
+    refused = [ctx for ctx, error in chats if error == LOW_MEMORY_ERROR]
+    answered = [ctx for ctx, error in chats if error is None]
+    if not refused:
+        raise SmokeFailure(
+            f"The stand-in never refused a context above {STAND_IN_FITTING_CTX}; "
+            f"the requests asked for {sorted({c for c, _ in chats})}"
+        )
+    if not answered or any((ctx or 0) > STAND_IN_FITTING_CTX for ctx in answered):
+        raise SmokeFailure(f"The server did not shrink the context: {chats}")
+    # The fitting size is remembered: one refusal per model load, not per turn.
+    if len(refused) > 2:
+        raise SmokeFailure(f"Every turn hit the memory limit again: {chats}")
+    print(
+        f"  ok  low memory: a {max(refused)}-token context did not fit; "
+        f"answered {len(answered)} requests at {max(c or 0 for c in answered)}",
+        flush=True,
+    )
+
+
+def check_failure_reaches_hud(base: str, model: str) -> None:
+    """A failing brain is reported to the app, not hidden as a network error."""
+    code, headers, body = hud_chat(base, model, f"Jarvis, {CRASH_PHRASE}")
+    detail = body.get("detail") if isinstance(body, dict) else None
+    problems = []
+    if code < 500:
+        problems.append(f"HTTP {code}")
+    if headers.get("access-control-allow-origin") != APP_ORIGIN:
+        problems.append("no CORS header, so the webview sees 'Failed to fetch'")
+    if not isinstance(detail, str) or CRASH_ERROR not in detail:
+        problems.append(f"the reply does not say what failed: {body!r}")
+    if problems:
+        raise SmokeFailure(
+            "A failed chat must reach the app as a readable error: "
+            + "; ".join(problems)
+        )
+    print(f"  ok  a failing brain is reported: HTTP {code} {detail}", flush=True)
+
+
+def wait_until_healthy(
+    server: subprocess.Popen[bytes], base: str, log_path: Path, label: str
+) -> None:
+    deadline = time.monotonic() + 420
+    while True:
+        if server.poll() is not None:
+            raise SmokeFailure(
+                f"{label} exited with {server.returncode}:\n"
+                + tail(log_path.read_text(encoding="utf-8", errors="replace"))
+            )
+        try:
+            http_json(f"{base}/health", timeout=5)
+            return
+        except (urllib.error.URLError, OSError, ValueError):
+            if time.monotonic() > deadline:
+                raise SmokeFailure(
+                    f"{label} did not become healthy in 7 minutes:\n"
+                    + tail(log_path.read_text(encoding="utf-8", errors="replace"))
+                ) from None
+            time.sleep(2)
+
+
+def converse_with_gemini(python: list[str], root: Path, home: Path) -> None:
+    """Run the server as the app's cloud source does: Gemini, Ollama off.
+
+    The app starts ``jarvis serve`` with ``--engine cloud --brain gemini`` and
+    the saved key in ``GEMINI_API_KEY``; nothing listens on Ollama's port.
+    """
+    stand_in, gemini_port = start_stand_in_gemini()
+    ollama_port = free_port()  # nothing listens here: Ollama is off
+    (home / "config.toml").write_text(
+        "\n".join(
+            [
+                "[engine.ollama]",
+                f'host = "http://127.0.0.1:{ollama_port}"',
+                "",
+                "[analytics]",
+                "enabled = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    port = free_port()
+    log_path = home / "serve-gemini.log"
+    env = backend_env(home)
+    env["GEMINI_API_KEY"] = GEMINI_TEST_KEY
+    env["GOOGLE_GEMINI_BASE_URL"] = f"http://127.0.0.1:{gemini_port}"
+    command = [
+        *python,
+        "-m",
+        "openjarvis.cli",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        *CLOUD_SOURCE_ARGS,
+    ]
+    label = "`jarvis serve " + " ".join(CLOUD_SOURCE_ARGS) + "`"
+    print("$ " + " ".join(command), flush=True)
+    with log_path.open("w", encoding="utf-8", errors="replace") as log:
+        server = subprocess.Popen(
+            command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT
+        )
+    base = f"http://127.0.0.1:{port}"
+
+    def server_log() -> str:
+        return tail(log_path.read_text(encoding="utf-8", errors="replace"), 4000)
+
+    try:
+        wait_until_healthy(server, base, log_path, label)
+        status = http_json(f"{base}/v1/jarvis/status")
+        if status.get("model") != GEMINI_MODEL or not status.get("jarvis_mode"):
+            raise SmokeFailure(
+                f"The cloud source should make Gemini JARVIS's brain: {status}"
+            )
+        print(f"  ok  cloud source: brain={status['model']}, Ollama off", flush=True)
+
+        text = "Jarvis, what time is it in Karachi?"
+        code, headers, reply = hud_chat(base, GEMINI_MODEL, text)
+        if code != 200:
+            raise SmokeFailure(
+                f"{text!r} failed with HTTP {code}: {reply}\n{server_log()}"
+            )
+        if headers.get("access-control-allow-origin") != APP_ORIGIN:
+            raise SmokeFailure(f"The Gemini reply has no CORS header: {headers}")
+        answer = reply["choices"][0]["message"]["content"] or ""
+        print(f"  you: {text}\n  jarvis (gemini): {answer}", flush=True)
+        if "Asia/Karachi" not in answer:
+            raise SmokeFailure(
+                f"JARVIS did not use current_datetime through Gemini: {answer!r}\n"
+                + server_log()
+            )
+        chats = [r for r in _StandInGemini.requests if ":generateContent" in r[0]]
+        if not chats or any(key != GEMINI_TEST_KEY for _, key, _ in chats):
+            raise SmokeFailure(
+                "The saved Gemini key did not reach Google's API: "
+                f"{[(path, bool(key)) for path, key, _ in _StandInGemini.requests]}"
+            )
+        if not any("functionResponse" in json.dumps(body) for _, _, body in chats):
+            raise SmokeFailure("The tool's result was never sent back to Gemini")
+        print(f"  ok  {len(chats)} Gemini requests carried the saved key", flush=True)
+
+        code, headers, body = hud_chat(base, GEMINI_MODEL, f"Jarvis, {REJECT_PHRASE}")
+        detail = body.get("detail") if isinstance(body, dict) else None
+        problems = []
+        if code < 400:
+            problems.append(f"HTTP {code}")
+        if headers.get("access-control-allow-origin") != APP_ORIGIN:
+            problems.append("no CORS header, so the webview sees 'Failed to fetch'")
+        if not isinstance(detail, str) or "api key" not in detail.lower():
+            problems.append(f"the reply does not mention the key: {body!r}")
+        if problems:
+            raise SmokeFailure(
+                "A rejected Gemini key must reach the app as a readable error: "
+                + "; ".join(problems)
+            )
+        print(f"  ok  a rejected key is reported: HTTP {code} {detail}", flush=True)
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            server.kill()
+        stand_in.shutdown()
+
+
 def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
     stand_in, ollama_port = start_stand_in_ollama()
     (home / "config.toml").write_text(
@@ -418,23 +762,7 @@ def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
         )
     base = f"http://127.0.0.1:{port}"
     try:
-        deadline = time.monotonic() + 420
-        while True:
-            if server.poll() is not None:
-                raise SmokeFailure(
-                    f"`jarvis serve --agent jarvis` exited with {server.returncode}:\n"
-                    + tail(log_path.read_text(encoding="utf-8", errors="replace"))
-                )
-            try:
-                http_json(f"{base}/health", timeout=5)
-                break
-            except (urllib.error.URLError, OSError, ValueError):
-                if time.monotonic() > deadline:
-                    raise SmokeFailure(
-                        "Server did not become healthy in 7 minutes:\n"
-                        + tail(log_path.read_text(encoding="utf-8", errors="replace"))
-                    ) from None
-                time.sleep(2)
+        wait_until_healthy(server, base, log_path, "`jarvis serve --agent jarvis`")
 
         status = http_json(f"{base}/v1/jarvis/status")
         problems = []
@@ -462,15 +790,16 @@ def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
             print("  --  voice checks skipped", flush=True)
 
         def ask(text: str) -> str:
-            reply = http_json(
-                f"{base}/v1/chat/completions",
-                {
-                    "model": status["model"],
-                    "messages": [{"role": "user", "content": text}],
-                    "stream": False,
-                },
-                timeout=180,
-            )
+            code, headers, reply = hud_chat(base, status["model"], text)
+            if code != 200:
+                raise SmokeFailure(
+                    f"{text!r} failed with HTTP {code}: {reply}\n{server_log()}"
+                )
+            if headers.get("access-control-allow-origin") != APP_ORIGIN:
+                raise SmokeFailure(
+                    f"The reply has no CORS header for {APP_ORIGIN}, so the "
+                    f"app's webview could not read it: {headers}"
+                )
             answer = reply["choices"][0]["message"]["content"] or ""
             print(f"  you: {text}\n  jarvis: {answer}", flush=True)
             lowered = answer.lower()
@@ -500,6 +829,8 @@ def converse(python: list[str], root: Path, home: Path, *, voice: bool) -> None:
                 capture_output=True,
                 check=False,
             )
+        check_low_memory_fallback(_StandInOllama.chats)
+        check_failure_reaches_hud(base, status["model"])
     finally:
         server.terminate()
         try:
@@ -577,6 +908,7 @@ def main(argv: list[str] | None = None) -> int:
         check_listen(python, root, home)
         check_tools(python, root, env)
         converse(python, root, home, voice=not args.skip_voice)
+        converse_with_gemini(python, root, home)
     except SmokeFailure as exc:
         report_failure("JARVIS backend smoke test", str(exc))
         failed = True

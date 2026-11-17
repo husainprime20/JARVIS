@@ -1,7 +1,7 @@
 [package]
-name = "openjarvis-desktop"
-version = "1.0.1"
-description = "OpenJarvis Desktop — Native AI assistant with energy monitoring, trace debugging, and learning visualization"
+name = "jarvis-desktop"
+version = "2.0.0"
+description = "JARVIS — a self-contained Rust AI assistant for Windows"
 edition = "2021"
 license = "MIT"
 
@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.13", features = ["json", "multipart"] }
 tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Cloud API keys are stored in the OS credential store via `keyring`. keyring v3
 # enables NO backend by default — without an explicit per-platform feature it

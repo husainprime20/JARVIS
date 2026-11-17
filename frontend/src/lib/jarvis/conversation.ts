@@ -51,13 +51,29 @@ export function friendlyError(error: unknown, honorific = 'sir'): string {
   const message = String(error instanceof Error ? error.message : error).toLowerCase();
   const title = honorific ? `, ${honorific}` : '';
   const has = (...markers: string[]) => markers.some((m) => message.includes(m));
-  if (has('429', 'resource_exhausted', 'rate limit', 'quota', 'too many')) {
+  // Whole numbers only: server details carry sizes and counts ("1429 tokens").
+  const code = (...codes: number[]) => codes.some((c) => new RegExp(`\\b${c}\\b`).test(message));
+  // Ollama could not load the local model, e.g. "model requires more system
+  // memory (3.1 GiB) than is available (2.4 GiB)" on a busy 8 GB PC.
+  if (has('requires more system memory', 'out of memory', 'not enough memory', 'insufficient memory')) {
+    return `My offline brain needs more free memory than this PC has right now${title}. Close a few programs, or switch me to a free Gemini key in Settings, under Inference source.`;
+  }
+  if (code(429) || has('resource_exhausted', 'rate limit', 'quota', 'too many requests')) {
     return `I've reached my usage limit for the moment${title}. Give it a minute, or switch me to another brain.`;
   }
-  if (has('401', '403', 'api key', 'api_key', 'unauthorized', 'permission')) {
+  if (code(401, 403) || has('api key', 'api_key', 'unauthorized', 'permission_denied')) {
     return `My API key was rejected${title}. Please check it and restart me.`;
   }
-  if (has('failed to fetch', 'networkerror', 'connect', 'timed out', 'timeout', 'unreachable', '502', '503')) {
+  if (has('ollama not reachable')) {
+    return `My offline brain, Ollama, isn't responding${title}. Restarting the app usually brings it back.`;
+  }
+  // Ollama answers but cannot start the program that runs models, e.g.
+  // "llama-server binary not found" when its lib\ollama runtime is missing.
+  if (has('error starting llama-server', 'llama-server binary not found', 'llama runner process has terminated')) {
+    return `My offline brain couldn't start its model${title}. Installing the latest version of the app usually fixes it, or switch me to a free Gemini key in Settings, under Inference source.`;
+  }
+  const unreachable = ['failed to fetch', 'networkerror', 'load failed', 'connection error', 'connection refused'];
+  if (code(502, 503, 504) || has(...unreachable, 'timed out', 'timeout', 'unreachable')) {
     return `I can't reach my brain right now${title}. Is the OpenJarvis server running?`;
   }
   return `I'm afraid something went wrong${title}. The details are on screen.`;

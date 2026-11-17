@@ -38,15 +38,13 @@ import type { JarvisStatus } from '../lib/jarvis/api';
 import { JarvisPage, describePhase } from './JarvisPage';
 
 describe('JarvisPage', () => {
-  it('renders the HUD in its connecting state without side effects', () => {
+  it('renders the Rust-first JARVIS assistant interface', () => {
     const html = renderToStaticMarkup(<JarvisPage />);
-    expect(html).toContain('J.A.R.V.I.S.');
-    expect(html).toContain('data-phase="offline"');
-    expect(html).toContain('Connecting to JARVIS core…');
-    expect(html).toContain('Waiting for JARVIS core…');
-    expect(html).toContain('Hold to talk');
-    // Voice controls stay disabled until the server and speech-to-text answer.
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*?Activate/);
+    expect(html).toContain('JARVIS');
+    expect(html).toContain('PERSONAL AI SYSTEM');
+    expect(html).toContain('Ask JARVIS anything');
+    expect(html).toContain('CTRL + ALT + J TO SUMMON');
+    expect(html).toContain('At your service');
   });
 });
 

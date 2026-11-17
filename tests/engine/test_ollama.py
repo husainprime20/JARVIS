@@ -506,3 +506,190 @@ class TestOllamaStreamHttpErrorMapping:
         # First request had tools (400), second retried without them (200).
         assert calls == [True, False]
         assert any(c.content == "recovered" for c in chunks)
+
+
+# Ollama's reply when the weights plus the KV cache for the requested context do
+# not fit in free RAM (seen on an 8 GB Windows PC with a browser open).
+_LOW_MEMORY_BODY = json.dumps(
+    {"error": "model requires more system memory (3.1 GiB) than is available (2.4 GiB)"}
+)
+
+
+def _memory_limited_handler(fits_up_to: int, seen: list[int]):
+    """An Ollama that only loads the model when ``num_ctx <= fits_up_to``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        num_ctx = payload["options"]["num_ctx"]
+        seen.append(num_ctx)
+        if num_ctx > fits_up_to:
+            return httpx.Response(500, text=_LOW_MEMORY_BODY)
+        reply = {
+            "message": {"role": "assistant", "content": f"ok at {num_ctx}"},
+            "done": True,
+            "prompt_eval_count": 10,
+            "eval_count": 3,
+        }
+        if payload.get("stream"):
+            return httpx.Response(200, text=json.dumps(reply) + "\n")
+        return httpx.Response(200, json=reply)
+
+    return handler
+
+
+def _sync_engine(handler) -> OllamaEngine:
+    engine = OllamaEngine(host="http://localhost:11434")
+    engine._client = httpx.Client(
+        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
+    )
+    return engine
+
+
+class TestOllamaLowMemoryFallback:
+    """A smaller context lets the model load when free memory is short."""
+
+    def test_generate_halves_the_context_until_the_model_fits(self) -> None:
+        seen: list[int] = []
+        engine = _sync_engine(_memory_limited_handler(fits_up_to=4096, seen=seen))
+
+        result = engine.generate(
+            [Message(role=Role.USER, content="Hi")], model="qwen3.5:0.8b"
+        )
+
+        assert seen == [16384, 8192, 4096]
+        assert result["content"] == "ok at 4096"
+
+    def test_the_context_that_fits_is_remembered(self) -> None:
+        seen: list[int] = []
+        engine = _sync_engine(_memory_limited_handler(fits_up_to=8192, seen=seen))
+        messages = [Message(role=Role.USER, content="Hi")]
+
+        engine.generate(messages, model="qwen3.5:0.8b")
+        engine.generate(messages, model="qwen3.5:0.8b")
+
+        # The second turn starts at 8192 instead of failing at 16384 first.
+        assert seen == [16384, 8192, 8192]
+
+    def test_gives_up_at_the_floor_with_the_ollama_message(self) -> None:
+        seen: list[int] = []
+        engine = _sync_engine(_memory_limited_handler(fits_up_to=1024, seen=seen))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            engine.generate(
+                [Message(role=Role.USER, content="Hi")], model="qwen3.5:0.8b"
+            )
+
+        assert seen == [16384, 8192, 4096]
+        assert str(excinfo.value) == (
+            "Ollama returned 500: model requires more system memory (3.1 GiB) "
+            "than is available (2.4 GiB)"
+        )
+
+    def test_a_pinned_context_is_never_changed(self) -> None:
+        seen: list[int] = []
+        engine = _sync_engine(_memory_limited_handler(fits_up_to=4096, seen=seen))
+
+        with pytest.raises(RuntimeError, match="requires more system memory"):
+            engine.generate(
+                [Message(role=Role.USER, content="Hi")],
+                model="qwen3.5:0.8b",
+                num_ctx=32768,
+            )
+
+        assert seen == [32768]
+
+    def test_other_server_errors_are_not_retried(self) -> None:
+        calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(json.loads(request.content)["options"]["num_ctx"])
+            return httpx.Response(
+                500, json={"error": "llama runner process has terminated"}
+            )
+
+        engine = _sync_engine(handler)
+        with pytest.raises(RuntimeError, match="llama runner process has terminated"):
+            engine.generate(
+                [Message(role=Role.USER, content="Hi")], model="qwen3.5:0.8b"
+            )
+
+        assert calls == [16384]
+
+    def test_tools_retry_and_memory_fallback_combine(self) -> None:
+        calls: list[tuple[bool, int]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            num_ctx = payload["options"]["num_ctx"]
+            calls.append(("tools" in payload, num_ctx))
+            if "tools" in payload:
+                return httpx.Response(400, text="model does not support tools")
+            if num_ctx > 8192:
+                return httpx.Response(500, text=_LOW_MEMORY_BODY)
+            return httpx.Response(200, json={"message": {"content": "fine"}})
+
+        engine = _sync_engine(handler)
+        result = engine.generate(
+            [Message(role=Role.USER, content="Hi")],
+            model="qwen3.5:0.8b",
+            tools=[{"type": "function", "function": {"name": "open_app"}}],
+        )
+
+        assert calls == [(True, 16384), (False, 16384), (False, 8192)]
+        assert result["content"] == "fine"
+
+    @pytest.mark.asyncio
+    async def test_stream_falls_back_too(self) -> None:
+        seen: list[int] = []
+        engine = OllamaEngine(host="http://localhost:11434")
+        engine._async_transport = httpx.MockTransport(
+            _memory_limited_handler(fits_up_to=8192, seen=seen)
+        )
+
+        tokens = [
+            t
+            async for t in engine.stream(
+                [Message(role=Role.USER, content="Hi")], model="qwen3.5:0.8b"
+            )
+        ]
+
+        assert seen == [16384, 8192]
+        assert tokens == ["ok at 8192"]
+
+    @pytest.mark.asyncio
+    async def test_stream_full_falls_back_and_keeps_the_tools(self) -> None:
+        calls: list[tuple[bool, int]] = []
+        handler = _memory_limited_handler(fits_up_to=8192, seen=[])
+
+        def recording(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            calls.append(("tools" in payload, payload["options"]["num_ctx"]))
+            return handler(request)
+
+        engine = OllamaEngine(host="http://localhost:11434")
+        engine._async_transport = httpx.MockTransport(recording)
+
+        chunks = [
+            c
+            async for c in engine.stream_full(
+                [Message(role=Role.USER, content="Hi")],
+                model="qwen3.5:0.8b",
+                tools=[{"type": "function", "function": {"name": "open_app"}}],
+            )
+        ]
+
+        assert calls == [(True, 16384), (True, 8192)]
+        assert any(c.content == "ok at 8192" for c in chunks)
+
+    @pytest.mark.asyncio
+    async def test_stream_gives_up_at_the_floor(self) -> None:
+        engine = OllamaEngine(host="http://localhost:11434")
+        engine._async_transport = httpx.MockTransport(
+            _memory_limited_handler(fits_up_to=1024, seen=[])
+        )
+
+        with pytest.raises(EngineConnectionError, match="requires more system memory"):
+            async for _ in engine.stream_full(
+                [Message(role=Role.USER, content="Hi")], model="qwen3.5:0.8b"
+            ):
+                pass

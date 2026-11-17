@@ -108,6 +108,31 @@ def test_stand_in_model_drives_the_jarvis_tools():
     assert answer["content"] == "Certainly, sir. It is noon."
 
 
+def test_stand_in_ollama_has_the_free_memory_of_a_busy_8gb_pc():
+    def body(text: str, num_ctx: int) -> dict:
+        return {
+            "messages": [{"role": "user", "content": text}],
+            "options": {"num_ctx": num_ctx},
+        }
+
+    assert smoke_mod.stand_in_failure(body("hey", 8192)) is None
+    # JARVIS's default 16k context does not fit, so the server must shrink it.
+    assert smoke_mod.stand_in_failure(body("hey", 16384)) == smoke_mod.LOW_MEMORY_ERROR
+    assert (
+        smoke_mod.stand_in_failure(body("Jarvis, simulate a crash", 4096))
+        == smoke_mod.CRASH_ERROR
+    )
+
+
+def test_ollama_engine_recognises_the_stand_in_low_memory_error():
+    """The smoke test's refusal must be one the engine retries."""
+    from openjarvis.engine.ollama import _is_low_memory_error
+
+    error_body = json.dumps({"error": smoke_mod.LOW_MEMORY_ERROR})
+    assert _is_low_memory_error(500, error_body)
+    assert not _is_low_memory_error(500, json.dumps({"error": smoke_mod.CRASH_ERROR}))
+
+
 def test_smoke_upload_is_valid_multipart_for_the_transcribe_route():
     """The smoke test builds its upload by hand; FastAPI must parse it."""
     from fastapi import FastAPI, File, Form, UploadFile

@@ -150,6 +150,55 @@ describe('helpers', () => {
     expect(friendlyError('boom', 'boss')).toMatch(/something went wrong, boss/);
   });
 
+  it('explains what the server reports when the brain fails', () => {
+    // askJarvis throws "<status> <server detail>".
+    expect(
+      friendlyError(
+        new Error(
+          '500 Ollama returned 500: model requires more system memory (3.1 GiB) than is available (2.4 GiB)',
+        ),
+      ),
+    ).toMatch(/needs more free memory than this PC has right now, sir\. Close a few programs/);
+    expect(friendlyError(new Error('503 Ollama not reachable at http://localhost:11434'))).toMatch(
+      /Ollama, isn't responding, sir/,
+    );
+    // The error from Windows installers that left out Ollama's model runtime.
+    expect(
+      friendlyError(
+        new Error(
+          "500 Ollama returned 500: error starting llama-server: llama-server binary not found (checked: C:\\Users\\NOVA\\AppData\\Local\\OpenJarvis\\llama-server.exe). Run 'cmake -S llama/server --preset cpu' first",
+        ),
+      ),
+    ).toMatch(/couldn't start its model, sir\. Installing the latest version/);
+    expect(friendlyError(new Error('500 Ollama returned 500: llama runner process has terminated: exit status 2'))).toMatch(
+      /couldn't start its model/,
+    );
+    expect(friendlyError(new Error('500 429 RESOURCE_EXHAUSTED: quota exceeded'))).toMatch(/usage limit/);
+    expect(friendlyError(new Error('500 403 PERMISSION_DENIED'))).toMatch(/API key was rejected/);
+    // What the server reports for a mistyped Gemini key (the cloud source).
+    expect(
+      friendlyError(
+        new Error(
+          "500 400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key not valid. Please pass a valid API key.', 'status': 'INVALID_ARGUMENT'}}",
+        ),
+      ),
+    ).toMatch(/API key was rejected, sir/);
+  });
+
+  it('points offline-brain failures at the cloud source in Settings', () => {
+    const hint = /switch me to a free Gemini key in Settings, under Inference source\./;
+    expect(friendlyError(new Error('500 Ollama returned 500: model requires more system memory (3.1 GiB) than is available (2.4 GiB)'))).toMatch(hint);
+    expect(friendlyError(new Error('500 Ollama returned 500: llama-server binary not found'))).toMatch(hint);
+  });
+
+  it('does not mistake numbers or words in error details for status codes', () => {
+    expect(friendlyError(new Error('500 prompt of 1429 tokens is too long'))).toMatch(/something went wrong/);
+    expect(friendlyError(new Error("500 [Errno 13] Permission denied: 'memory.db'"))).toMatch(
+      /something went wrong/,
+    );
+    expect(friendlyError(new Error('500 needs 4.03 GB'))).toMatch(/something went wrong/);
+  });
+
   it('greets by the time of day', () => {
     expect(greeting('sir', new Date(2026, 10, 15, 8))).toBe('Good morning, sir. JARVIS online and at your service.');
     expect(greeting('sir', new Date(2026, 10, 15, 14))).toMatch(/^Good afternoon/);

@@ -83,6 +83,46 @@ def _default_num_ctx() -> int:
         return 16384
 
 
+# Ollama refuses to load a model when its weights plus the KV cache for the
+# requested context do not fit in free memory: "model requires more system
+# memory (3.1 GiB) than is available (2.4 GiB)". The cache grows with num_ctx,
+# so a smaller context often fits where the 16k default does not, for example
+# on an 8 GB PC with a browser open.
+_LOW_MEMORY_MARKERS = (
+    "requires more system memory",
+    "out of memory",
+    "insufficient memory",
+    "not enough memory",
+    "unable to allocate",
+    "failed to allocate",
+    "cannot allocate memory",
+)
+
+# The context is halved down to Ollama's own default, which still holds
+# JARVIS's prompt (about 2.2k tokens of instructions and tool schemas) and a
+# reply. Below it there would be no room left to answer.
+_MIN_FALLBACK_NUM_CTX = 4096
+
+
+def _is_low_memory_error(status_code: int, body: str) -> bool:
+    """Whether Ollama could not load the model for lack of memory."""
+    if status_code < 500:
+        return False
+    text = (body or "").lower()
+    return any(marker in text for marker in _LOW_MEMORY_MARKERS)
+
+
+def _ollama_error_text(body: str) -> str:
+    """The ``error`` message of an Ollama error body, else the raw body."""
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+        return parsed["error"]
+    return (body or "")[:500]
+
+
 def _ollama_request_options(
     *,
     temperature: float,
@@ -137,6 +177,49 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
         self._client = httpx.Client(base_url=self._host, timeout=timeout)
         # Last stream usage — captured from Ollama's final chunk
         self._last_stream_usage: Dict[str, int] = {}
+        # Largest context known to fit in free memory, per model, learned from
+        # Ollama's low-memory refusals (see ``_shrink_num_ctx``).
+        self._num_ctx_cap: Dict[str, int] = {}
+
+    def _cap_num_ctx(self, model: str, payload: Dict[str, Any], pinned: bool) -> None:
+        """Start from the largest context already known to fit for *model*."""
+        cap = self._num_ctx_cap.get(model)
+        options = payload["options"]
+        if not pinned and cap is not None and options.get("num_ctx", 0) > cap:
+            options["num_ctx"] = cap
+
+    def _shrink_num_ctx(
+        self,
+        model: str,
+        payload: Dict[str, Any],
+        pinned: bool,
+        status_code: int,
+        body: str,
+    ) -> bool:
+        """Halve the context after a low-memory refusal.
+
+        Returns ``True`` when *payload* now asks for a smaller context worth
+        retrying, ``False`` when the error is something else, the caller pinned
+        ``num_ctx``, or the context is already at the floor. The smaller size
+        is remembered so later requests do not fail first.
+        """
+        if pinned or not _is_low_memory_error(status_code, body):
+            return False
+        current = int(payload["options"].get("num_ctx") or _default_num_ctx())
+        smaller = current // 2
+        if smaller < _MIN_FALLBACK_NUM_CTX:
+            return False
+        payload["options"]["num_ctx"] = smaller
+        self._num_ctx_cap[model] = smaller
+        logger.warning(
+            "Ollama cannot fit %s with a %d-token context in free memory (%s); "
+            "retrying with %d tokens.",
+            model,
+            current,
+            _ollama_error_text(body),
+            smaller,
+        )
+        return True
 
     def generate(
         self,
@@ -189,19 +272,28 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
                 payload["format"] = "json"
             elif isinstance(response_format, dict):
                 payload["format"] = "json"
+        ctx_pinned = kwargs.get("num_ctx") is not None
+        self._cap_num_ctx(model, payload, ctx_pinned)
         try:
-            resp = self._client.post("/api/chat", json=payload)
-            if resp.status_code == 400 and tools:
-                # Model may not support function calling -- retry without tools
-                payload.pop("tools", None)
+            while True:
                 resp = self._client.post("/api/chat", json=payload)
+                if resp.status_code == 400 and payload.get("tools"):
+                    # Model may not support function calling -- retry without tools
+                    payload.pop("tools", None)
+                    resp = self._client.post("/api/chat", json=payload)
+                # Not enough free memory for this context: try a smaller one.
+                if resp.is_server_error and self._shrink_num_ctx(
+                    model, payload, ctx_pinned, resp.status_code, resp.text
+                ):
+                    continue
+                break
             resp.raise_for_status()
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise EngineConnectionError(
                 f"Ollama not reachable at {self._host}"
             ) from exc
         except httpx.HTTPStatusError as exc:
-            body = exc.response.text[:500] if exc.response else ""
+            body = _ollama_error_text(exc.response.text) if exc.response else ""
             raise RuntimeError(
                 f"Ollama returned {exc.response.status_code}: {body}"
             ) from exc
@@ -298,6 +390,8 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
             payload["think"] = False
         elif kwargs["think"] is not None:
             payload["think"] = kwargs["think"]
+        ctx_pinned = kwargs.get("num_ctx") is not None
+        self._cap_num_ctx(model, payload, ctx_pinned)
         try:
             # ASYNC streaming: ``httpx.AsyncClient`` + ``aiter_lines`` never
             # blocks the event loop between tokens (the previous SYNC
@@ -317,6 +411,20 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
                     # Read the (short) error body before touching ``.text``:
                     # a streaming response is otherwise unread.
                     await resp.aread()
+                    if self._shrink_num_ctx(
+                        model, payload, ctx_pinned, resp.status_code, resp.text
+                    ):
+                        # Nothing was yielded yet; start over with the smaller
+                        # context, which is now this model's cap.
+                        async for content in self.stream(
+                            messages,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            **kwargs,
+                        ):
+                            yield content
+                        return
                     self._raise_stream_http_error(resp.status_code, resp.text)
                 async for line in resp.aiter_lines():
                     if not line.strip():
@@ -398,8 +506,13 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
         if tools:
             payload["tools"] = tools
 
+        ctx_pinned = kwargs.get("num_ctx") is not None
+        self._cap_num_ctx(model, payload, ctx_pinned)
         async for chunk in self._run_stream(
-            payload, messages, retry_without_tools=bool(tools)
+            payload,
+            messages,
+            retry_without_tools=bool(tools),
+            ctx_pinned=ctx_pinned,
         ):
             yield chunk
 
@@ -409,6 +522,7 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
         messages: Sequence[Message],
         *,
         retry_without_tools: bool,
+        ctx_pinned: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Execute the streaming request and yield parsed StreamChunks."""
         try:
@@ -424,7 +538,10 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
                     # EngineConnectionError below.
                     payload.pop("tools", None)
                     async for c in self._run_stream(
-                        payload, messages, retry_without_tools=False
+                        payload,
+                        messages,
+                        retry_without_tools=False,
+                        ctx_pinned=ctx_pinned,
                     ):
                         yield c
                     return
@@ -436,6 +553,22 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
                 # silent EMPTY stream rather than a clean engine error.
                 if not resp.is_success:
                     await resp.aread()
+                    if self._shrink_num_ctx(
+                        payload["model"],
+                        payload,
+                        ctx_pinned,
+                        resp.status_code,
+                        resp.text,
+                    ):
+                        # Nothing was yielded yet; retry with the halved context.
+                        async for c in self._run_stream(
+                            payload,
+                            messages,
+                            retry_without_tools=retry_without_tools,
+                            ctx_pinned=ctx_pinned,
+                        ):
+                            yield c
+                        return
                     self._raise_stream_http_error(resp.status_code, resp.text)
 
                 finish_reason: str | None = None
