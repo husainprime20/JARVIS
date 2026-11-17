@@ -88,6 +88,13 @@ jobs:
           npx tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows-exe.conf.json *> tauri-build.log
           $buildExitCode = $LASTEXITCODE
           Get-Content tauri-build.log
+          if ($buildExitCode -ne 0) {
+            $diagnostics = Select-String -Path tauri-build.log -Pattern 'error\[|error:|failed|could not|cannot find|not found' | Select-Object -Last 12
+            if ($diagnostics) {
+              $message = (($diagnostics | ForEach-Object { $_.Line.Trim() }) -join ' | ').Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Tauri build diagnostics::$message"
+            }
+          }
           exit $buildExitCode
 
       - name: Upload Tauri build log (diagnostics)
