@@ -82,11 +82,22 @@ jobs:
 
       - name: Build NSIS installer
         working-directory: frontend
-        run: >-
-          npx tauri build
-          --target x86_64-pc-windows-msvc
-          --bundles nsis
-          --config src-tauri/tauri.windows-exe.conf.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          npx tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows-exe.conf.json *> tauri-build.log
+          $buildExitCode = $LASTEXITCODE
+          Get-Content tauri-build.log
+          exit $buildExitCode
+
+      - name: Upload Tauri build log (diagnostics)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jarvis-tauri-build-log
+          if-no-files-found: warn
+          retention-days: 7
+          path: frontend/tauri-build.log
 
       - name: Upload installer
         uses: actions/upload-artifact@v7
