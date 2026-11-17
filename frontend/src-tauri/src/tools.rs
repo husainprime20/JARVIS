@@ -303,11 +303,13 @@ async fn get_weather(city: &str) -> String {
     let (Some(lat), Some(lon)) = (lat, lon) else {
         return format!("I couldn't find a place called {city}.");
     };
+    let latitude = lat.to_string();
+    let longitude = lon.to_string();
     let forecast_response = match reqwest::Client::new()
         .get("https://api.open-meteo.com/v1/forecast")
         .query(&[
-            ("latitude", &lat.to_string()),
-            ("longitude", &lon.to_string()),
+            ("latitude", latitude.as_str()),
+            ("longitude", longitude.as_str()),
             ("current_weather", "true"),
         ])
         .send()
