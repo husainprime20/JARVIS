@@ -492,8 +492,111 @@ async fn web_search(query: &str) -> String {
     if !first.is_empty() {
         return first.to_string();
     }
+    // Instant-answer JSON is often empty for normal questions. Fetch the
+    // lightweight HTML results page so the model gets actual snippets/links,
+    // rather than only being told that a browser tab was opened.
+    let results = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("Mozilla/5.0 (compatible; JARVIS/2.0)")
+        .build()
+    {
+        Ok(client) => match client
+            .get("https://html.duckduckgo.com/html/")
+            .query(&[("q", query)])
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => response
+                .text()
+                .await
+                .ok()
+                .map(|html| parse_search_results(&html)),
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    if let Some(results) = results.filter(|items| !items.is_empty()) {
+        return format!("Web results for '{query}':\n{}", results.join("\n"));
+    }
     let _ = open_target(&format!("https://duckduckgo.com/?q={}", urlencode(query)));
     format!("I opened a web search for '{query}'.")
+}
+
+fn parse_search_results(html: &str) -> Vec<String> {
+    fn text_content(fragment: &str) -> String {
+        let mut text = String::new();
+        let mut in_tag = false;
+        for ch in fragment.chars() {
+            match ch {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => text.push(ch),
+                _ => {}
+            }
+        }
+        text.replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#x27;", "'")
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    let mut results = Vec::new();
+    let mut cursor = 0;
+    while results.len() < 3 {
+        let Some(relative) = html[cursor..].find("result__a") else { break };
+        let class_at = cursor + relative;
+        let Some(tag_start_rel) = html[..class_at].rfind("<a") else { break };
+        let Some(tag_end_rel) = html[class_at..].find('>') else { break };
+        let tag_end = class_at + tag_end_rel;
+        let Some(close_rel) = html[tag_end..].find("</a>") else { break };
+        let close = tag_end + close_rel;
+        let tag = &html[tag_start_rel..=tag_end];
+        let title = text_content(&html[tag_end + 1..close]);
+        let href = tag
+            .find("href=\"")
+            .and_then(|i| tag[i + 6..].find('\"').map(|end| tag[i + 6..i + 6 + end].to_string()))
+            .unwrap_or_default()
+            .replace("&amp;", "&");
+        if !title.is_empty() {
+            let snippet = html[close + 4..]
+                .find("result__snippet")
+                .and_then(|i| {
+                    let class_at = close + 4 + i;
+                    let tag_start = html[..class_at].rfind('<')?;
+                    let tag_end = class_at + html[class_at..].find('>')?;
+                    let tail = &html[tag_end + 1..];
+                    let end_a = tail.find("</a>");
+                    let end_div = tail.find("</div>");
+                    let end = match (end_a, end_div) {
+                        (Some(a), Some(d)) => a.min(d),
+                        (Some(a), None) => a,
+                        (None, Some(d)) => d,
+                        (None, None) => return None,
+                    };
+                    let _ = tag_start;
+                    Some(text_content(&tail[..end]))
+                })
+                .unwrap_or_default();
+            let mut item = title;
+            if !snippet.is_empty() {
+                item.push_str(" — ");
+                item.push_str(&snippet);
+            }
+            if href.starts_with("http://") || href.starts_with("https://") {
+                item.push_str(" (");
+                item.push_str(&href);
+                item.push(')');
+            }
+            results.push(item);
+        }
+        cursor = close + 4;
+    }
+    results
 }
 
 /// Minimal percent-encoding for a query string value.
@@ -673,6 +776,16 @@ mod tests {
         assert!(eval("hello").is_err());
         assert!(eval("1 / 0").is_err());
         assert!(eval("").is_err());
+    }
+
+    #[test]
+    fn parses_search_results_with_plain_text_and_links() {
+        let html = r#"<a class="result__a" href="https://example.com/?a=1&amp;b=2">Useful <b>Result</b></a><a class="result__snippet">A short &amp; clear summary.</a>"#;
+        let results = parse_search_results(html);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("Useful Result"));
+        assert!(results[0].contains("A short & clear summary."));
+        assert!(results[0].contains("https://example.com/?a=1&b=2"));
     }
 
     #[test]
