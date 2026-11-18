@@ -50,6 +50,39 @@ fn app_target(name: &str) -> Option<String> {
     Some(target.to_string())
 }
 
+fn launch_installed_app(name: &str) -> Result<(), String> {
+    // Resolve names against the user's Start Menu instead of passing
+    // model-generated text to a shell. The query is supplied only as an
+    // environment variable; the PowerShell script itself is fixed.
+    #[cfg(windows)]
+    {
+        let script = r#"$ErrorActionPreference = 'Stop'
+$q = [regex]::Replace($env:JARVIS_APP_QUERY.ToLowerInvariant(), '[^a-z0-9+#.]', ' ').Trim()
+$roots = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'), (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'))
+$appMatch = Get-ChildItem -Path $roots -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -notmatch '(?i)uninstall|readme|help|manual|release notes|documentation' } | ForEach-Object { $label = [regex]::Replace($_.BaseName.ToLowerInvariant(), '[^a-z0-9+#.]', ' ').Trim(); if ($label -eq $q) { [pscustomobject]@{Rank=0; Path=$_.FullName} } elseif ($label.StartsWith($q)) { [pscustomobject]@{Rank=1; Path=$_.FullName} } elseif ($label.Contains($q)) { [pscustomobject]@{Rank=2; Path=$_.FullName} } } | Sort-Object Rank, Path | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($q) -or $null -eq $appMatch) { exit 3 }
+Start-Process -FilePath $appMatch.Path
+"#;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("JARVIS_APP_QUERY", name)
+            .output()
+            .map_err(|e| format!("Could not search installed apps: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else if output.status.code() == Some(3) {
+            Err(format!("I couldn't find an installed app named '{name}'."))
+        } else {
+            Err(format!("Could not launch '{name}': {}", String::from_utf8_lossy(&output.stderr).trim()))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        Err("Installed-app discovery is supported on Windows only.".to_string())
+    }
+}
+
 fn open_target(target: &str) -> Result<(), String> {
     // App targets come only from the static allow-list above. Protocols and
     // web URLs go through Explorer as a process argument (never a shell), so
@@ -194,9 +227,10 @@ pub async fn execute(name: &str, args: &Value) -> String {
                     Ok(()) => format!("Opened {app}."),
                     Err(e) => format!("I could not open {app}: {e}"),
                 },
-                None => format!(
-                    "I don't know how to open '{app}'. Try Notepad, Calculator, Chrome, Spotify or VS Code."
-                ),
+                None => match launch_installed_app(&app) {
+                    Ok(()) => format!("Opened {app}."),
+                    Err(e) => e,
+                },
             }
         }
         "open_website" => {
