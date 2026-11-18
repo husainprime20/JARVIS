@@ -63,7 +63,7 @@ pub async fn transcribe_audio(audio_base64: &str, mime_type: &str) -> Result<Str
     }
     let key = gemini_key()?;
     let settings = store::load_settings();
-    let model = if settings.gemini_model.trim().is_empty() { "gemini-2.5-flash" } else { settings.gemini_model.trim() };
+    let model = if settings.gemini_model.trim().is_empty() { "gemini-3.5-flash-lite" } else { settings.gemini_model.trim() };
     let mime = match mime_type.split(';').next().unwrap_or("") {
         "audio/webm" | "audio/ogg" | "audio/wav" | "audio/mp4" | "audio/mpeg" => mime_type.split(';').next().unwrap_or("audio/webm"),
         _ => "audio/webm",
@@ -230,7 +230,7 @@ async fn chat_gemini(
     let key = gemini_key()?;
     let model = settings.gemini_model.trim();
     let model = if model.is_empty() {
-        "gemini-2.5-flash"
+        "gemini-3.5-flash-lite"
     } else {
         model
     };

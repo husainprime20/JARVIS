@@ -26,9 +26,11 @@ struct Session {
 
 impl Session {
     fn new() -> Self {
-        Self {
-            history: Vec::new(),
+        let mut history = store::load_history();
+        if history.len() > 40 {
+            history.drain(0..history.len() - 40);
         }
+        Self { history }
     }
 }
 
@@ -80,6 +82,9 @@ async fn chat(
             let excess = session.history.len() - 40;
             session.history.drain(0..excess);
         }
+        // The live turn succeeds even if local disk is temporarily unavailable;
+        // the current session remains intact and a later turn retries persistence.
+        let _ = store::save_history(&session.history);
     }
     Ok(reply)
 }
@@ -95,7 +100,8 @@ async fn transcribe_audio(audio_base64: String, mime_type: String) -> Result<Str
 fn clear_history(state: tauri::State<'_, Mutex<Session>>) -> Result<(), String> {
     let mut session = state.lock().map_err(|_| "JARVIS is busy.".to_string())?;
     session.history.clear();
-    Ok(())
+    store::save_history(&session.history)
+
 }
 
 #[tauri::command]

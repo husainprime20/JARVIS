@@ -39,7 +39,7 @@ impl Default for Settings {
         Self {
             // A cloud API key is the default brain: no Ollama, no downloads.
             engine: "gemini".to_string(),
-            gemini_model: "gemini-2.5-flash".to_string(),
+            gemini_model: "gemini-3.5-flash-lite".to_string(),
             ollama_host: "http://127.0.0.1:11434".to_string(),
             ollama_model: "llama3.1:8b".to_string(),
             user_name: String::new(),
@@ -82,7 +82,15 @@ fn write_json<T: Serialize>(name: &str, value: &T) -> Result<(), String> {
 }
 
 pub fn load_settings() -> Settings {
-    read_json("settings.json")
+    let mut settings: Settings = read_json("settings.json");
+    // Upgrade the retired default in existing installs as well as fresh ones.
+    // Otherwise users keep hitting the same model-not-available error after
+    // updating the application because settings persist across installer runs.
+    if matches!(settings.gemini_model.trim(), "gemini-2.5-flash" | "gemini-2.5-flash-lite") {
+        settings.gemini_model = "gemini-3.5-flash-lite".to_string();
+        let _ = save_settings(&settings);
+    }
+    settings
 }
 
 pub fn save_settings(settings: &Settings) -> Result<(), String> {
@@ -98,6 +106,16 @@ pub fn load_memory() -> Memory {
 
 pub fn save_memory(memory: &Memory) -> Result<(), String> {
     write_json("memory.json", memory)
+}
+
+/// Conversation context is persisted locally so the assistant does not forget
+/// everything when the app is restarted. The caller bounds the history size.
+pub fn load_history() -> Vec<crate::brain::Message> {
+    read_json("conversation.json")
+}
+
+pub fn save_history(history: &[crate::brain::Message]) -> Result<(), String> {
+    write_json("conversation.json", &history)
 }
 
 // ---------------------------------------------------------------------------
