@@ -12,6 +12,7 @@ from openjarvis.core.types import Message, Role
 from openjarvis.engine._base import EngineConnectionError
 from openjarvis.engine.cloud import (
     CloudEngine,
+    _convert_tools_to_google,
     _is_codex_model,
     _is_deepseek_model,
     _is_openai_model,
@@ -19,6 +20,40 @@ from openjarvis.engine.cloud import (
     estimate_cost,
 )
 from tests.engine.conftest import CLOUD_KEY_ENV_VARS
+
+
+class TestGoogleToolSchema:
+    def test_strips_unsupported_additional_properties_recursively(self) -> None:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "example",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "additional_properties": False,
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "additionalProperties": False,
+                        }
+                    },
+                    "required": ["query"],
+                },
+            },
+        }]
+        converted = _convert_tools_to_google(tools)
+        assert converted == [{
+            "name": "example",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        }]
+        # Conversion does not mutate the caller's shared OpenAI schema.
+        assert "additional_properties" in tools[0]["function"]["parameters"]
 
 
 class TestEstimateCost:

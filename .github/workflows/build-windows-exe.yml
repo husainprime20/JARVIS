@@ -1,58 +1,23 @@
 name: Build Windows EXE
 
-# Manual, no-secrets build of the JARVIS Windows desktop installer.
-#
-# Unlike desktop.yml this workflow never signs anything and never touches the
-# updater manifest, so it runs unchanged on a fork (including a fork without
-# the upstream repository's secrets).
-#
-# The installer is self-contained apart from downloads on first launch:
-#   - the desktop app (Tauri) with the JARVIS HUD,
-#   - the Python backend in <install dir>\src, with a prebuilt openjarvis_rust
-#     wheel, so users need no git, Rust or Visual Studio Build Tools,
-#   - uv (installs Python and the backend's packages on first launch),
-#   - Ollama (the offline brain; a cloud key saved in Settings is used instead
-#     when present).
-# Before packaging, the bundled backend is installed exactly as the app will
-# install it and holds a scripted JARVIS conversation (see
-# scripts/desktop/smoke_jarvis_backend.py).
-#
-# Output: an artifact named `openjarvis-windows-exe` containing
-#   - OpenJarvis_<version>_x64-setup.exe  (NSIS installer)
-# and, with `publish_release`, a GitHub pre-release carrying the installer.
-#
-# Trigger:
-#   Actions -> Build Windows EXE -> Run workflow
-# or:
-#   gh workflow run build-windows-exe.yml --ref main -f publish_release=true
-# Pull requests that touch the app, the backend or this build also run it
-# (without publishing), so a change that breaks the installer shows up there.
-
+# Build the Rust/Tauri JARVIS desktop app. This workflow does not package or
+# bootstrap the retired Python backend or an Ollama sidecar.
 on:
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/build-windows-exe.yml"
-      - "scripts/desktop/**"
       - "scripts/build-exe.ps1"
       - "frontend/**"
-      - "src/openjarvis/**"
-      - "rust/**"
-      - "pyproject.toml"
-      - "uv.lock"
   workflow_dispatch:
     inputs:
       version:
-        description: >-
-          Installer version (SemVer, e.g. 1.0.2). Leave empty to use the
-          version in frontend/src-tauri/tauri.conf.json.
+        description: Installer version (SemVer); defaults to tauri.conf.json.
         required: false
         default: ""
         type: string
       publish_release:
-        description: >-
-          Also publish the installer as a GitHub pre-release, so it can be
-          downloaded without signing in.
+        description: Publish the unsigned installer as a GitHub pre-release.
         required: false
         default: false
         type: boolean
@@ -68,10 +33,9 @@ jobs:
   build:
     name: Windows x64 installer
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     outputs:
       version: ${{ steps.config.outputs.version }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -83,9 +47,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # frontend/.npmrc sets engine-strict=true and package.json requires
-      # npm >=11.19 <12, so the runner's bundled npm is not enough.
-      - name: Use the reviewed npm toolchain
+      - name: Use supported npm
         run: npm install --global npm@11.19.0
 
       - name: Install frontend dependencies
@@ -100,94 +62,9 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: |
-            frontend/src-tauri -> target
-            rust -> target
+          workspaces: frontend/src-tauri -> target
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
-        with:
-          enable-cache: true
-
-      # openjarvis_rust is not built for the stable ABI, so the wheel targets
-      # one Python version; the staged backend pins the same one.
-      - name: Install Python 3.12
-        run: uv python install 3.12
-
-      - name: Build the openjarvis_rust wheel
-        shell: bash
-        run: |
-          set -euo pipefail
-          python="$(uv python find 3.12)"
-          uvx --from "maturin>=1.12.6,<2" maturin build --release \
-            --manifest-path rust/crates/openjarvis-python/Cargo.toml \
-            --interpreter "$python" \
-            --out dist/wheels
-          ls -l dist/wheels
-
-      - name: Stage the bundled JARVIS backend
-        shell: bash
-        run: |
-          set -euo pipefail
-          wheel="$(ls dist/wheels/openjarvis_rust-*-cp312-*.whl)"
-          uv run --no-project --python 3.12 python \
-            scripts/desktop/stage_jarvis_backend.py \
-            --wheel "$wheel" --out frontend/src-tauri/jarvis-backend
-
-      # Installs the staged backend the way the app does on first launch,
-      # then exercises speech/voice imports, the PC tools and a JARVIS
-      # conversation through `jarvis serve`. A broken backend fails here
-      # instead of on a user's machine.
-      - name: Smoke-test the bundled backend
-        shell: bash
-        run: |
-          uv run --no-project --python 3.12 python \
-            scripts/desktop/smoke_jarvis_backend.py \
-            --backend frontend/src-tauri/jarvis-backend
-
-      # The app bundles Ollama as a Tauri sidecar. ollama.exe alone can only
-      # start and download models: running one needs the archive's lib/ollama
-      # runtime (llama-server.exe and its DLLs), which the script stages under
-      # binaries/ollama-runtime-x86_64-pc-windows-msvc. It leaves out the
-      # NVIDIA CUDA libraries (over 1 GB); models run on the CPU, and on the
-      # GPU through Vulkan.
-      - name: Download Ollama sidecar
-        shell: bash
-        working-directory: frontend/src-tauri/scripts
-        run: |
-          chmod +x download-ollama.sh
-          ./download-ollama.sh x86_64-pc-windows-msvc
-
-      # Lay out ollama.exe and its runtime as in the install folder, start it
-      # the way the app does, and run the model the app picks for 4-8 GB PCs.
-      # The backend smoke test above uses a stand-in Ollama, so only this
-      # catches an Ollama that cannot run models.
-      - name: Smoke-test the bundled Ollama
-        shell: bash
-        run: |
-          uv run --no-project --python 3.12 python \
-            scripts/desktop/smoke_ollama_runtime.py \
-            --ollama frontend/src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe \
-            --runtime frontend/src-tauri/binaries/ollama-runtime-x86_64-pc-windows-msvc \
-            --model qwen3.5:0.8b
-
-      # uv installs Python and the backend's packages on first launch; the
-      # app prefers this copy over any uv on PATH.
-      - name: Bundle uv
-        shell: pwsh
-        run: |
-          $uv = (Get-Command uv).Source
-          & $uv --version
-          New-Item -ItemType Directory -Force frontend/src-tauri/binaries | Out-Null
-          Copy-Item $uv frontend/src-tauri/binaries/uv-x86_64-pc-windows-msvc.exe
-
-      # tauri.conf.json intentionally does not declare sidecars or resources
-      # (release builds layer their own config on top). Generate an override:
-      # bundle Ollama with its runtime (lib\ollama beside ollama.exe, where
-      # Ollama looks for llama-server), uv and the staged backend (installed as
-      # <dir>\src, the first place the app looks for a backend), but no updater
-      # artifacts, which would require TAURI_SIGNING_PRIVATE_KEY.
-      - name: Write unsigned build config
+      - name: Read build version
         id: config
         shell: bash
         env:
@@ -195,88 +72,47 @@ jobs:
         run: |
           node <<'NODE'
           const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
-
-          const source = JSON.parse(
-            readFileSync('frontend/src-tauri/tauri.conf.json', 'utf8'),
-          );
-          const config = {
-            version: process.env.EXE_VERSION || source.version,
-            bundle: {
-              externalBin: ['binaries/ollama', 'binaries/uv'],
-              resources: {
-                'jarvis-backend/': 'src/',
-                'binaries/ollama-runtime-x86_64-pc-windows-msvc/': './',
-              },
-              createUpdaterArtifacts: false,
-            },
-          };
-
-          if (!/^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$/.test(config.version)) {
-            throw new Error(
-              `Installer version must be SemVer (got ${JSON.stringify(config.version)})`,
-            );
-          }
-
-          writeFileSync(
-            'frontend/src-tauri/tauri.windows-exe.conf.json',
-            JSON.stringify(config, null, 2),
-          );
-          appendFileSync(process.env.GITHUB_OUTPUT, `version=${config.version}\n`);
-          console.log(`Building OpenJarvis ${config.version} (NSIS, unsigned)`);
+          const config = JSON.parse(readFileSync('frontend/src-tauri/tauri.conf.json', 'utf8'));
+          const version = process.env.EXE_VERSION || config.version;
+          if (!/^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`Invalid SemVer: ${version}`);
+          writeFileSync('frontend/src-tauri/tauri.windows-exe.conf.json', JSON.stringify({version, bundle: {createUpdaterArtifacts: false}}, null, 2));
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          console.log(`Building JARVIS ${version}`);
           NODE
 
       - name: Build NSIS installer
         working-directory: frontend
-        env:
-          # Fallback when no bundled backend is found: clone this repository.
-          OPENJARVIS_BACKEND_REPO: ${{ github.server_url }}/${{ github.repository }}.git
-        run: >-
-          npx tauri build
-          --target x86_64-pc-windows-msvc
-          --bundles nsis
-          --config src-tauri/tauri.windows-exe.conf.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          npx tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows-exe.conf.json *> tauri-build.log
+          $buildExitCode = $LASTEXITCODE
+          Get-Content tauri-build.log
+          if ($buildExitCode -ne 0) {
+            $diagnostics = Select-String -Path tauri-build.log -Pattern 'error\[|error:|failed|could not|cannot find|not found' | Select-Object -Last 12
+            if ($diagnostics) {
+              $message = (($diagnostics | ForEach-Object { $_.Line.Trim() }) -join ' | ').Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Tauri build diagnostics::$message"
+            }
+          }
+          exit $buildExitCode
+
+      - name: Upload Tauri build log (diagnostics)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jarvis-tauri-build-log
+          if-no-files-found: warn
+          retention-days: 7
+          path: frontend/tauri-build.log
 
       - name: Upload installer
         uses: actions/upload-artifact@v7
         with:
-          name: openjarvis-windows-exe
+          name: jarvis-windows-exe
           if-no-files-found: error
           retention-days: 14
           path: frontend/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-
-      # After the upload, so a failed check still leaves the installer to
-      # inspect; a failure here also stops the pre-release.
-      - name: Verify the installer contents
-        shell: bash
-        run: |
-          set -euo pipefail
-          bundle_dir=frontend/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
-          installer="$(find "$bundle_dir" -maxdepth 1 -name '*.exe' -print -quit)"
-          test -n "$installer"
-          listing="$(7z l "$installer" | tr -d '\r')"
-          for expected in 'uv.exe' 'ollama.exe' 'openjarvis-desktop.exe' \
-            'src\pyproject.toml' 'src\uv.lock' 'src\src\openjarvis\agents\jarvis.py' \
-            'src\wheels\openjarvis_rust-'; do
-            if ! grep -qF -- "$expected" <<<"$listing"; then
-              echo "::error title=Installer contents::missing $expected"
-              exit 1
-            fi
-          done
-          # Ollama finds its runtime only in lib\ollama beside ollama.exe.
-          for expected in 'lib\ollama\llama-server.exe' 'lib\ollama\ggml-base.dll'; do
-            if ! grep -qE "[[:space:]]${expected//\\/\\\\}\$" <<<"$listing"; then
-              echo "::error title=Installer contents::missing $expected beside ollama.exe"
-              exit 1
-            fi
-          done
-          if grep -qF 'lib\ollama\cuda_' <<<"$listing"; then
-            echo "::error title=Installer contents::the CUDA libraries (over 1 GB) were bundled"
-            exit 1
-          fi
-          files="$(grep -cF 'src\src\openjarvis\' <<<"$listing" || true)"
-          runtime="$(grep -cF 'lib\ollama\' <<<"$listing" || true)"
-          size="$(du -h "$installer" | cut -f1)"
-          echo "::notice title=Installer::$(basename "$installer") ($size, $files backend files, $runtime Ollama runtime files)"
 
   release:
     name: Publish pre-release
@@ -289,10 +125,10 @@ jobs:
       - name: Download installer
         uses: actions/download-artifact@v7
         with:
-          name: openjarvis-windows-exe
+          name: jarvis-windows-exe
           path: installer
 
-      - name: Create the pre-release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
@@ -301,22 +137,17 @@ jobs:
         run: |
           set -euo pipefail
           short="${SHA::7}"
-          tag="jarvis-desktop-v${VERSION}-${short}"
+          tag="jarvis-v${VERSION}-${short}"
           cat > notes.md <<EOF
-          Test build of the JARVIS desktop app for Windows 10/11 (64-bit), built from \`${REF_NAME}\` at ${short}.
+          JARVIS desktop for Windows 10/11 x64, built from \`${REF_NAME}\` at ${short}.
 
-          **Install:** download \`$(basename installer/*.exe)\` and run it. The installer is not code-signed, so Windows SmartScreen may say "Windows protected your PC": choose **More info**, then **Run anyway**.
+          Install the unsigned installer (Windows SmartScreen may require **More info → Run anyway**). On first launch, open Settings and save a Gemini API key from https://aistudio.google.com/api-keys. Keys are stored in Windows Credential Manager. Ollama is optional and is not installed or started by this release.
 
-          **First launch** installs JARVIS's speech, voice and AI packages and downloads a local AI model (several GB in total), so it can take a while. Later launches start quickly.
-
-          **Brains:** JARVIS uses a cloud key if you save one in Settings (a free Google Gemini key from https://aistudio.google.com/api-keys works), otherwise the offline Ollama model. Restart the app after adding a key.
-
-          Open **JARVIS** in the sidebar for the HUD: press Activate and say "Jarvis, what time is it?".
+          Press **Ctrl+Alt+J** to bring up JARVIS. The app includes a floating always-on-top orb and voice input; when WebView2 speech recognition is unavailable it records a short clip for Gemini transcription.
           EOF
           gh release create "$tag" installer/*.exe \
             --repo "$GITHUB_REPOSITORY" \
             --target "$SHA" \
             --prerelease \
-            --title "JARVIS for Windows ${VERSION} (test build ${short})" \
+            --title "JARVIS for Windows ${VERSION} (${short})" \
             --notes-file notes.md
-          echo "::notice title=Release::https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}"

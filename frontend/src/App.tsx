@@ -19,7 +19,7 @@ import { UpdateChecker } from './components/Desktop/UpdateChecker';
 import { track, hashId } from './lib/analytics';
 import { offerAnalyticsChoice } from './lib/analytics-invitation';
 
-export default function App() {
+function LegacyApp() {
   const [setupDone, setSetupDone] = useState(!isTauri());
   const handleSetupReady = useCallback(() => {
     setSetupDone(true);
@@ -202,4 +202,10 @@ export default function App() {
       )}
     </>
   );
+}
+
+/** Desktop installs launch the Rust-first JARVIS UI directly. The legacy web
+ * framework remains available in an ordinary browser while it is phased out. */
+export default function App() {
+  return isTauri() ? <JarvisPage /> : <LegacyApp />;
 }

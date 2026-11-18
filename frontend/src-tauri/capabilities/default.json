@@ -1,29 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for OpenJarvis Desktop",
-  "windows": ["main"],
+  "description": "JARVIS permissions",
+  "windows": ["main", "overlay"],
   "permissions": [
     "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-is-visible",
     "notification:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
-    "updater:default",
     "process:default",
-    "shell:allow-execute",
-    "shell:allow-spawn",
-    "shell:allow-stdin-write",
-    "shell:allow-kill",
     "shell:allow-open",
-    "dialog:allow-open",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        { "name": "binaries/ollama", "sidecar": true, "args": true }
-      ]
-    }
+    "dialog:allow-open"
   ]
 }

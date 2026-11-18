@@ -48,6 +48,10 @@ export default defineConfig({
     // Preserve the Vite 6 browser baseline for existing desktop webviews.
     target: ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'],
     rolldownOptions: {
+      input: {
+        main: path.resolve(import.meta.dirname, 'index.html'),
+        overlay: path.resolve(import.meta.dirname, 'overlay.html'),
+      },
       output: {
         codeSplitting: {
           groups: [
@@ -64,6 +68,8 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
+    allowedHosts: true,
     port: 5173,
     proxy: {
       // ws: true is required for the /v1/agents/events WebSocket. Without it

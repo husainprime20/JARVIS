@@ -56,7 +56,7 @@ export function friendlyError(error: unknown, honorific = 'sir'): string {
   // Ollama could not load the local model, e.g. "model requires more system
   // memory (3.1 GiB) than is available (2.4 GiB)" on a busy 8 GB PC.
   if (has('requires more system memory', 'out of memory', 'not enough memory', 'insufficient memory')) {
-    return `My offline brain needs more free memory than this PC has right now${title}. Close a few programs, or add a free Gemini key in Settings and restart me.`;
+    return `My offline brain needs more free memory than this PC has right now${title}. Close a few programs, or switch me to a free Gemini key in Settings, under Inference source.`;
   }
   if (code(429) || has('resource_exhausted', 'rate limit', 'quota', 'too many requests')) {
     return `I've reached my usage limit for the moment${title}. Give it a minute, or switch me to another brain.`;
@@ -70,7 +70,7 @@ export function friendlyError(error: unknown, honorific = 'sir'): string {
   // Ollama answers but cannot start the program that runs models, e.g.
   // "llama-server binary not found" when its lib\ollama runtime is missing.
   if (has('error starting llama-server', 'llama-server binary not found', 'llama runner process has terminated')) {
-    return `My offline brain couldn't start its model${title}. Installing the latest version of the app usually fixes it, or add a free Gemini key in Settings and restart me.`;
+    return `My offline brain couldn't start its model${title}. Installing the latest version of the app usually fixes it, or switch me to a free Gemini key in Settings, under Inference source.`;
   }
   const unreachable = ['failed to fetch', 'networkerror', 'load failed', 'connection error', 'connection refused'];
   if (code(502, 503, 504) || has(...unreachable, 'timed out', 'timeout', 'unreachable')) {

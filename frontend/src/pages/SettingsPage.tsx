@@ -36,6 +36,11 @@ import {
   type MemoryStats,
 } from '../lib/api';
 import { isAutoUpdateDisabled, setAutoUpdateDisabled } from '../components/Desktop/UpdateChecker';
+import {
+  CLOUD_PROVIDERS,
+  cloudProvider,
+  type CloudProviderId,
+} from '../components/InferenceSourceSetup';
 
 const CLOUD_KEY_STATUS_CHANGED = 'openjarvis-cloud-key-status-changed';
 
@@ -339,11 +344,18 @@ export function SettingsPage() {
   const [customModel, setCustomModel] = useState('');
   const [customEngine, setCustomEngine] = useState('lmstudio');
   const [customKey, setCustomKey] = useState('');
+  const [cloudProviderId, setCloudProviderId] = useState<CloudProviderId>('gemini');
+  const [cloudKey, setCloudKey] = useState('');
   const [srcMsg, setSrcMsg] = useState('');
 
   useEffect(() => {
     getInferenceSource().then((s) => {
       setSrcKind(s.kind);
+      if (s.kind === 'cloud') {
+        // For a cloud source, `engine` holds the provider, not a server type.
+        setCloudProviderId(cloudProvider(s.engine).id);
+        return;
+      }
       if (s.host) setCustomHost(s.host);
       if (s.model) setCustomModel(s.model);
       if (s.engine) setCustomEngine(s.engine);
@@ -354,14 +366,17 @@ export function SettingsPage() {
     try {
       if (srcKind === 'custom') {
         await setInferenceSource({ kind: 'custom', host: customHost, model: customModel, engine: customEngine, apiKey: customKey || undefined });
+      } else if (srcKind === 'cloud') {
+        await setInferenceSource({ kind: 'cloud', engine: cloudProviderId, apiKey: cloudKey.trim() || undefined });
+        setCloudKey('');
       } else {
         await setInferenceSource({ kind: 'ollama' });
       }
-      setSrcMsg('Saved — restart the app to apply.');
+      setSrcMsg('Saved. To apply it, right-click the OpenJarvis tray icon, choose Quit OpenJarvis, then open the app again.');
     } catch (e: any) {
       setSrcMsg(e?.message ?? 'Failed to save.');
     }
-  }, [srcKind, customHost, customModel, customEngine, customKey]);
+  }, [srcKind, customHost, customModel, customEngine, customKey, cloudProviderId, cloudKey]);
 
   const refreshMemoryStatus = useCallback(async () => {
     const requestId = ++memoryRequestId.current;
@@ -572,9 +587,32 @@ export function SettingsPage() {
                 style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}
               >
                 <option value="ollama">Bundled Ollama (default)</option>
+                <option value="cloud">Cloud AI key (Gemini, OpenAI, Claude)</option>
                 <option value="custom">Custom OpenAI-compatible server</option>
               </select>
             </SettingRow>
+            {srcKind === 'cloud' && (
+              <>
+                <SettingRow label="Provider" description="JARVIS thinks with this AI. Ollama stays off and nothing is downloaded.">
+                  <select value={cloudProviderId} onChange={(e) => { setCloudProviderId(e.target.value as CloudProviderId); setSrcMsg(''); }}
+                    className="text-sm px-3 py-1.5 rounded-lg outline-none w-56"
+                    style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}>
+                    {CLOUD_PROVIDERS.map((provider) => (
+                      <option key={provider.id} value={provider.id}>{provider.label}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow
+                  label="API key"
+                  description={`Leave blank to keep the key already saved. ${cloudProvider(cloudProviderId).hint} Get one at ${cloudProvider(cloudProviderId).keyUrl.replace('https://', '')}`}
+                >
+                  <input type="password" value={cloudKey} onChange={(e) => { setCloudKey(e.target.value); setSrcMsg(''); }} placeholder={cloudProvider(cloudProviderId).placeholder}
+                    autoComplete="off" spellCheck={false}
+                    className="text-sm px-3 py-1.5 rounded-lg outline-none w-56"
+                    style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }} />
+                </SettingRow>
+              </>
+            )}
             {srcKind === 'custom' && (
               <>
                 <SettingRow label="Server URL" description="e.g. LM Studio: http://localhost:1234/v1">

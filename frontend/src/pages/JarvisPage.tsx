@@ -1,532 +1,252 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Hand, Mic, MicOff, SendHorizontal, Square, Volume2, VolumeX } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUp, Mic, MicOff, Settings2, Trash2, X } from 'lucide-react';
 import { ArcReactor, type ReactorPhase } from '../components/Jarvis/ArcReactor';
-import { StatsPanel } from '../components/Jarvis/StatsPanel';
-import { useJarvisMic, type Utterance } from '../hooks/useJarvisMic';
-import { fetchSpeechHealth, transcribeAudio, type SpeechHealth } from '../lib/api';
-import { askJarvis, fetchJarvisStatus, speakAndWait, stopSpeaking, type JarvisStatus } from '../lib/jarvis/api';
-import { JarvisConversation, greeting } from '../lib/jarvis/conversation';
-import { WakeWordDetector } from '../lib/jarvis/wakeWord';
-import { useAppStore } from '../lib/store';
-import { useTtsStore } from '../lib/tts';
+import { ChatPanel } from '../components/Jarvis/ChatPanel';
+import { SettingsPanel } from '../components/Jarvis/SettingsPanel';
+import { VoiceVisualizer } from '../components/Jarvis/VoiceVisualizer';
+import { chat, clearHistory, friendlyError, getHealth, getHistory, getSettings, isDesktop, transcribeAudio, type ChatMessage, type Health } from '../lib/jarvis/api';
+import { JarvisVoice, speechSupported, type VoiceState } from '../lib/jarvis/voice';
 
-type LogKind = 'you' | 'jarvis' | 'error';
-interface LogEntry {
-  id: number;
-  kind: LogKind;
-  text: string;
-  at: number;
-}
-
-const STATUS_POLL_MS = 5000;
-const MAX_LOG = 60;
-const SERVE_COMMAND = 'jarvis serve --agent jarvis';
-// One command for every JARVIS dependency: a partial `uv sync` would uninstall the rest.
-const INSTALL_COMMAND = 'uv sync --extra jarvis --group desktop-native';
-
-function capitalise(word: string): string {
-  return word ? word.charAt(0).toUpperCase() + word.slice(1) : word;
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** The one-line status under the reactor. */
-export function describePhase(
-  phase: ReactorPhase,
-  {
-    wakeWord = 'jarvis',
-    awake = false,
-    requireWakeWord = true,
-    calibrating = false,
-    connecting = false,
-  }: {
-    wakeWord?: string;
-    awake?: boolean;
-    requireWakeWord?: boolean;
-    calibrating?: boolean;
-    connecting?: boolean;
-  } = {},
-): string {
-  switch (phase) {
-    case 'offline':
-      return connecting ? 'Connecting to JARVIS core…' : 'JARVIS core offline.';
-    case 'thinking':
-      return 'Thinking…';
-    case 'speaking':
-      return 'Speaking…';
-    case 'hearing':
-      return 'Listening…';
-    case 'listening':
-      if (calibrating) return 'Calibrating to the room. A second of quiet, please…';
-      if (awake || !requireWakeWord) return "I'm listening.";
-      return `Say “${capitalise(wakeWord)}” to wake me.`;
-    default:
-      return 'Standing by. Activate the microphone, or type below.';
-  }
-}
-
-function Banner({ tone = 'info', children }: { tone?: 'info' | 'warn'; children: ReactNode }) {
-  const color = tone === 'warn' ? '#f5a524' : '#22d3ee';
-  return (
-    <div
-      className="w-full text-xs leading-relaxed rounded-lg px-3 py-2"
-      style={{
-        color: 'var(--color-text-secondary)',
-        background: `color-mix(in srgb, ${color} 8%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`,
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function Code({ children }: { children: ReactNode }) {
-  return (
-    <code className="hud-mono px-1 py-0.5 rounded" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}>
-      {children}
-    </code>
-  );
+export function describePhase(phase: ReactorPhase, options: { wakeWord?: string; awake?: boolean; requireWakeWord?: boolean; calibrating?: boolean; connecting?: boolean } = {}): string {
+  if (phase === 'offline') return options.connecting ? 'Connecting to JARVIS core…' : 'JARVIS core offline.';
+  if (phase === 'thinking') return 'Thinking…';
+  if (phase === 'speaking') return 'Speaking…';
+  if (phase === 'hearing') return 'Listening…';
+  if (phase === 'listening') return options.calibrating ? 'Calibrating to the room. A second of quiet, please…' : options.awake || options.requireWakeWord === false ? "I'm listening." : `Say “${(options.wakeWord ?? 'jarvis').charAt(0).toUpperCase()}${(options.wakeWord ?? 'jarvis').slice(1)}” to wake me.`;
+  return 'Standing by. Activate the microphone, or type below.';
 }
 
 export function JarvisPage() {
-  const serverInfo = useAppStore((s) => s.serverInfo);
-  const selectedModel = useAppStore((s) => s.selectedModel);
-  const ttsAvailable = useTtsStore((s) => s.available);
-  const ensureTtsHealth = useTtsStore((s) => s.ensureHealth);
-
-  const [status, setStatus] = useState<JarvisStatus | null>(null);
-  const [online, setOnline] = useState<boolean | null>(null);
-  const [speech, setSpeech] = useState<SpeechHealth | null>(null);
-  const [log, setLog] = useState<LogEntry[]>([]);
-  const [busy, setBusy] = useState<'thinking' | 'speaking' | null>(null);
-  const [transcribing, setTranscribing] = useState(false);
-  const [overheard, setOverheard] = useState('');
-  const [muted, setMuted] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [draft, setDraft] = useState('');
-  const [awake, setAwake] = useState(false);
-  const [now, setNow] = useState(() => new Date());
-
-  const coreRef = useRef<SVGGElement>(null);
-  const logBoxRef = useRef<HTMLDivElement>(null);
-  const nextId = useRef(1);
-  const greeted = useRef(false);
-  const processing = useRef(false);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const wakeWord = status?.wake_word || 'jarvis';
-  const honorific = status?.honorific ?? 'sir';
-  const followUpMs = Math.round((status?.follow_up_seconds ?? 8) * 1000);
-  const requireWakeWord = status?.require_wake_word ?? true;
-  const model = status?.model || serverInfo?.model || selectedModel || '';
-
-  const modelRef = useRef(model);
-  const mutedRef = useRef(muted);
-  useEffect(() => {
-    modelRef.current = model;
-  }, [model]);
-  useEffect(() => {
-    mutedRef.current = muted;
-  }, [muted]);
-
-  const addLog = useCallback((kind: LogKind, text: string) => {
-    const entry = { id: nextId.current++, kind, text, at: Date.now() };
-    setLog((prev) => [...prev, entry].slice(-MAX_LOG));
-  }, []);
-
-  const conversation = useMemo(
-    () =>
-      new JarvisConversation({
-        detector: new WakeWordDetector(wakeWord),
-        honorific,
-        followUpMs,
-        ask: async (request, history) => {
-          if (!modelRef.current) throw new Error('No model is configured on the server.');
-          abortRef.current?.abort();
-          const controller = new AbortController();
-          abortRef.current = controller;
-          return askJarvis(modelRef.current, history, request, controller.signal);
-        },
-        speak: async (text) => {
-          if (!mutedRef.current) await speakAndWait(text);
-        },
-        emit: (event) => {
-          if (event.kind === 'phase') setBusy(event.phase === 'done' ? null : event.phase);
-          else if (event.kind === 'overheard') setOverheard(event.text);
-          else {
-            if (event.kind === 'you') setOverheard('');
-            addLog(event.kind, event.text);
-          }
-        },
-      }),
-    [wakeWord, honorific, followUpMs, addLog],
-  );
-
-  const onLevel = useCallback((level: number) => {
-    const core = coreRef.current;
-    if (core) core.style.transform = `scale(${1 + Math.min(0.35, level * 6)})`;
-  }, []);
-
-  const utteranceRef = useRef<(utterance: Utterance) => void>(() => undefined);
-  const mic = useJarvisMic({ onUtterance: (u) => utteranceRef.current(u), onLevel });
-  const { setPaused, stop: stopMic } = mic;
-
-  /** Run one request; `direct` skips the wake-word requirement. */
-  const respond = useCallback(
-    async (text: string, direct: boolean) => {
-      const outcome = await conversation.handle(text, { direct });
-      if (outcome === 'stop') stopMic();
-    },
-    [conversation, stopMic],
-  );
+  const [input, setInput] = useState('');
+  const [thinking, setThinking] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [error, setError] = useState('');
+  const [health, setHealth] = useState<Health | null>(null);
+  const levelRef = useRef(0);
+  const voiceRef = useRef<JarvisVoice | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const busyRef = useRef(false);
 
   useEffect(() => {
-    utteranceRef.current = (utterance: Utterance) => {
-      if (processing.current) return;
-      processing.current = true;
-      void (async () => {
-        try {
-          setTranscribing(true);
-          let text = '';
-          try {
-            const result = await transcribeAudio(utterance.wav, 'utterance.wav', {
-              prompt: `${capitalise(wakeWord)}.`,
-              vad: true,
-            });
-            text = (result.text ?? '').trim();
-          } catch (error) {
-            addLog('error', `Speech recognition failed: ${messageOf(error)}`);
-            return;
-          } finally {
-            setTranscribing(false);
-          }
-          if (text) await respond(text, utterance.pushToTalk || !requireWakeWord);
-        } finally {
-          processing.current = false;
-          setAwake(conversation.isAwake());
-        }
-      })();
-    };
-  }, [addLog, conversation, requireWakeWord, respond, wakeWord]);
-
-  // Never listen to ourselves.
-  useEffect(() => {
-    setPaused(busy !== null || transcribing);
-  }, [busy, transcribing, setPaused]);
-
-  // Status and telemetry.
-  useEffect(() => {
-    let cancelled = false;
-    let controller: AbortController | null = null;
-    const poll = async () => {
-      controller?.abort();
-      controller = new AbortController();
-      try {
-        const next = await fetchJarvisStatus(controller.signal);
-        if (cancelled) return;
-        setStatus(next);
-        setOnline(true);
-      } catch (error) {
-        if (cancelled || (error instanceof DOMException && error.name === 'AbortError')) return;
-        setOnline(false);
-      }
-    };
-    void poll();
-    const timer = setInterval(poll, STATUS_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      controller?.abort();
-    };
-  }, []);
-
-  // Which voice features the server offers (re-checked when it comes online).
-  useEffect(() => {
-    if (!online) return;
-    fetchSpeechHealth()
-      .then(setSpeech)
-      .catch(() => setSpeech({ available: false }));
-    void ensureTtsHealth();
-  }, [online, ensureTtsHealth]);
-
-  // Clock, and the follow-up window indicator.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setNow(new Date());
-      setAwake(conversation.isAwake());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [conversation]);
-
-  // Keep the newest exchange in view. Scroll only the log box: scrollIntoView
-  // would also scroll the page and hide the header on short screens.
-  useEffect(() => {
-    const box = logBoxRef.current;
-    if (box && log.length > 0) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
-  }, [log]);
-
-  // Leaving the page: stop talking and drop any request in flight.
-  useEffect(
-    () => () => {
-      abortRef.current?.abort();
-      stopSpeaking();
-    },
-    [],
-  );
-
-  const sttReady = speech?.available === true;
-  const canTalk = online === true && sttReady;
-
-  const activate = async () => {
-    if (!(await mic.start())) return;
-    conversation.sleep();
-    if (greeted.current) return;
-    greeted.current = true;
-    const hello = greeting(honorific);
-    addLog('jarvis', hello);
-    if (mutedRef.current) return;
-    setBusy('speaking');
-    try {
-      await speakAndWait(hello);
-    } finally {
-      setBusy(null);
+    if (isDesktop()) {
+      void getHealth().then(setHealth).catch(() => {});
+      void getHistory().then(setMessages).catch(() => {});
     }
-  };
+    const timer = window.setInterval(() => {
+      if (isDesktop()) void getHealth().then(setHealth).catch(() => {});
+    }, 12000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  const deactivate = () => {
-    mic.stop();
-    conversation.sleep();
-    setAwake(false);
-  };
+  const send = useCallback(async (text: string) => {
+    const clean = text.trim();
+    if (!clean || busyRef.current) return;
+    busyRef.current = true;
+    setDraft('');
+    setInput('');
+    setError('');
+    setMessages((items) => [...items, { role: 'user', text: clean }]);
+    setThinking(true);
+    setVoiceState('thinking');
+    try {
+      const reply = await chat(clean);
+      setMessages((items) => [...items, { role: 'assistant', text: reply.text }]);
+      const settings = await import('../lib/jarvis/api').then((m) => m.getSettings()).catch(() => null);
+      if (settings?.voice && voiceRef.current) await voiceRef.current.speak(reply.text);
+    } catch (e) {
+      const message = friendlyError(e);
+      setError(message);
+      setMessages((items) => [...items, { role: 'assistant', text: message }]);
+      if (voiceRef.current) await voiceRef.current.speak(message);
+    } finally {
+      setThinking(false);
+      busyRef.current = false;
+      setVoiceState(voiceRef.current?.isRunning ? 'listening' : 'idle');
+    }
+  }, []);
 
-  const startPushToTalk = useCallback(() => {
-    if (!canTalk || processing.current) return;
-    stopSpeaking();
-    void mic.beginPushToTalk();
-  }, [canTalk, mic]);
+  const stopVoice = useCallback(() => {
+    voiceRef.current?.stop();
+    voiceRef.current = null;
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    setDraft('');
+    setVoiceState('idle');
+  }, []);
 
-  // Hold Space to talk (when not typing); Escape stops JARVIS mid-sentence.
-  useEffect(() => {
-    const typing = (target: EventTarget | null) =>
-      target instanceof HTMLElement &&
-      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
-    const down = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        stopSpeaking();
+  const startVoice = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Microphone permission is unavailable. Check Windows microphone privacy settings.');
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setError('Microphone access was denied. Allow microphone access in Windows Settings, then try again.');
+      return;
+    }
+    setError('');
+    const settings = await getSettings().catch(() => null);
+    if (!speechSupported()) {
+      // WebView2 builds without SpeechRecognition can still hear voice: record
+      // a short push-to-talk clip and let the selected Gemini model transcribe it.
+      const fallbackVoice = new JarvisVoice({
+        requireWakeWord: settings?.wake_word ?? true,
+        onTranscript: () => {},
+        onState: setVoiceState,
+        onError: setError,
+      });
+      voiceRef.current = fallbackVoice;
+      if (typeof MediaRecorder === 'undefined') {
+        stream.getTracks().forEach((track) => track.stop());
+        setError('This Windows WebView cannot record audio. Update Microsoft Edge WebView2 and check microphone privacy settings.');
         return;
       }
-      if (event.code !== 'Space' || event.repeat || typing(event.target)) return;
-      event.preventDefault();
-      startPushToTalk();
-    };
-    const up = (event: KeyboardEvent) => {
-      if (event.code !== 'Space' || typing(event.target)) return;
-      event.preventDefault();
-      mic.endPushToTalk();
-    };
-    window.addEventListener('keydown', down);
-    window.addEventListener('keyup', up);
-    return () => {
-      window.removeEventListener('keydown', down);
-      window.removeEventListener('keyup', up);
-    };
-  }, [mic, startPushToTalk]);
+      try {
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+        const recorder = new MediaRecorder(stream, { mimeType });
+        const chunks: BlobPart[] = [];
+        recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+        recorder.onstop = async () => {
+          recorderRef.current = null;
+          stream.getTracks().forEach((track) => track.stop());
+          recordingStreamRef.current = null;
+          const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+          if (blob.size < 500) {
+            setVoiceState('idle');
+            setError('I didn’t hear any speech. Tap the microphone, speak clearly, then tap it again.');
+            return;
+          }
+          setVoiceState('thinking');
+          setDraft('Transcribing your voice…');
+          try {
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = () => reject(new Error('Could not read the audio recording.'));
+              reader.readAsDataURL(blob);
+            });
+            const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+            const transcript = await transcribeAudio(base64, blob.type || 'audio/webm');
+            setDraft('');
+            if (transcript.trim()) await send(transcript);
+            else setError('I couldn’t make out the words. Please try speaking a little closer to the microphone.');
+          } catch (e) {
+            setDraft('');
+            setError(friendlyError(e));
+            setVoiceState('idle');
+          }
+        };
+        recorder.start();
+        recorderRef.current = recorder;
+        recordingStreamRef.current = stream;
+        setDraft('Recording — tap the microphone when you’re done');
+        setVoiceState('hearing');
+        window.setTimeout(() => {
+          if (recorderRef.current === recorder && recorder.state !== 'inactive') recorder.stop();
+        }, 15000);
+      } catch (e) {
+        stream.getTracks().forEach((track) => track.stop());
+        setError(`Could not start audio recording: ${friendlyError(e)}`);
+      }
+      return;
+    }
+    stream.getTracks().forEach((track) => track.stop());
+    const voice = new JarvisVoice({
+      requireWakeWord: settings?.wake_word ?? true,
+      onTranscript: (text, isFinal) => {
+        setDraft(text);
+        if (isFinal && text.trim()) void send(text);
+      },
+      onState: setVoiceState,
+      onError: setError,
+    });
+    voiceRef.current = voice;
+    JarvisVoice.warmUpVoices();
+    voice.startListening();
+  }, [send]);
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    const text = draft.trim();
-    if (!text || processing.current) return;
-    setDraft('');
-    processing.current = true;
+  useEffect(() => () => {
+    voiceRef.current?.stop();
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    void send(input);
+  };
+
+  const wipe = async () => {
     try {
-      await respond(text, true);
-    } finally {
-      processing.current = false;
-      setAwake(conversation.isAwake());
+      await clearHistory();
+      setMessages([]);
+      setError('');
+    } catch (e) {
+      setError(friendlyError(e));
     }
   };
 
-  const phase: ReactorPhase =
-    online !== true
-      ? 'offline'
-      : busy ?? (transcribing || mic.pushToTalk ? 'hearing' : mic.active ? 'listening' : 'standby');
-  const statusText = describePhase(phase, {
-    wakeWord,
-    awake,
-    requireWakeWord,
-    calibrating: mic.calibrating,
-    connecting: online === null,
-  });
-
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-6xl mx-auto px-4 md:px-8 pt-14 pb-6 md:py-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="flex flex-col items-center gap-5 min-w-0">
-          <header className="w-full flex items-end justify-between gap-4">
+    <main className="jarvis-app">
+      <div className="jarvis-shell">
+        <header className="jarvis-header">
+          <div className="flex items-center gap-3">
+            <div className="jarvis-mark">J</div>
             <div>
-              <h1 className="text-2xl font-semibold tracking-[0.35em]" style={{ color: '#22d3ee' }}>
-                J.A.R.V.I.S.
-              </h1>
-              <p className="text-[11px] uppercase tracking-[0.2em]" style={{ color: 'var(--color-text-tertiary)' }}>
-                Just A Rather Very Intelligent System
-              </p>
+              <div className="jarvis-title">JARVIS</div>
+              <div className="jarvis-subtitle">PERSONAL AI SYSTEM</div>
             </div>
-            <div className="text-right">
-              <div className="text-lg md:text-xl hud-mono whitespace-nowrap" style={{ color: 'var(--color-text)' }}>
-                {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-              </div>
-              <div className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>
-                {now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}
-              </div>
-            </div>
-          </header>
-
-          {online === false && (
-            <Banner tone="warn">
-              JARVIS core is offline. Start it with <Code>{SERVE_COMMAND}</Code>. This page reconnects by itself.
-            </Banner>
-          )}
-          {online && status && !status.jarvis_mode && (
-            <Banner>
-              The server is running the “{status.agent ?? 'default'}” agent, so PC control and memory are off.
-              Restart it with <Code>{SERVE_COMMAND}</Code> for the full JARVIS.
-            </Banner>
-          )}
-          {online && speech && !speech.available && (
-            <Banner>
-              Speech recognition is not available on the server
-              {speech.reason ? ` (${speech.reason})` : ''}. Install it with <Code>{INSTALL_COMMAND}</Code> and
-              restart the server. Typing still works.
-            </Banner>
-          )}
-          {online && ttsAvailable === false && (
-            <Banner>
-              Voice output is off. For the British voice run <Code>{INSTALL_COMMAND}</Code> and restart the server.
-            </Banner>
-          )}
-
-          <ArcReactor phase={phase} size={300} coreRef={coreRef} />
-
-          <div className="flex flex-col items-center gap-1 text-center min-h-[3rem]" aria-live="polite">
-            <p className="text-sm tracking-wide" style={{ color: 'var(--color-text)' }}>
-              {statusText}
-            </p>
-            {overheard && phase === 'listening' && (
-              <p className="text-xs italic" style={{ color: 'var(--color-text-tertiary)' }}>
-                Heard “{overheard}”. Start with “{capitalise(wakeWord)}” and I’ll respond.
-              </p>
-            )}
           </div>
-
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            {mic.active ? (
-              <button type="button" onClick={deactivate} className="jarvis-button" aria-pressed="true">
-                <MicOff size={15} /> Deactivate
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void activate()}
-                disabled={!canTalk}
-                className="jarvis-button jarvis-button--primary"
-                title={canTalk ? 'Listen for the wake word' : 'Needs the server and speech recognition'}
-              >
-                <Mic size={15} /> Activate
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={!canTalk}
-              className="jarvis-button"
-              aria-pressed={mic.pushToTalk}
-              onPointerDown={startPushToTalk}
-              onPointerUp={() => mic.endPushToTalk()}
-              onPointerLeave={() => mic.endPushToTalk()}
-              onPointerCancel={() => mic.endPushToTalk()}
-              title="Hold to talk (or hold Space)"
-            >
-              <Hand size={15} /> Hold to talk
-            </button>
-            <button
-              type="button"
-              className="jarvis-button"
-              onClick={() => {
-                if (!muted) stopSpeaking();
-                setMuted(!muted);
-              }}
-              aria-pressed={muted}
-              title={muted ? 'Unmute JARVIS' : 'Mute JARVIS'}
-            >
-              {muted ? <VolumeX size={15} /> : <Volume2 size={15} />} {muted ? 'Muted' : 'Voice on'}
-            </button>
-            {busy === 'speaking' && (
-              <button type="button" className="jarvis-button" onClick={stopSpeaking} title="Stop talking (Esc)">
-                <Square size={13} /> Stop
-              </button>
-            )}
-          </div>
-          {mic.error && (
-            <p className="text-xs" style={{ color: '#f87171' }}>
-              {mic.error}
-            </p>
-          )}
-
-          <section className="hud-panel w-full p-4 flex flex-col gap-3" aria-label="Conversation">
-            <div ref={logBoxRef} className="max-h-[34vh] min-h-[6rem] overflow-y-auto flex flex-col gap-2.5 pr-1">
-              {log.length === 0 && (
-                <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                  Try “{capitalise(wakeWord)}, what’s the time?”, “open Notepad”, “play lo-fi beats on YouTube”,
-                  “how’s my battery?” or “remember that my name is Tony”.
-                </p>
-              )}
-              {log.map((entry) => (
-                <div key={entry.id} className="flex gap-3 text-sm leading-relaxed">
-                  <span
-                    className="hud-mono text-[10px] pt-1 shrink-0 w-12 uppercase tracking-wider"
-                    style={{
-                      color: entry.kind === 'jarvis' ? '#22d3ee' : entry.kind === 'error' ? '#f87171' : 'var(--color-text-tertiary)',
-                    }}
-                  >
-                    {entry.kind === 'jarvis' ? 'Jarvis' : entry.kind === 'error' ? 'Error' : 'You'}
-                  </span>
-                  <p className="whitespace-pre-wrap break-words min-w-0" style={{ color: 'var(--color-text)' }}>
-                    {entry.text}
-                  </p>
-                </div>
-              ))}
+          <div className="flex items-center gap-2">
+            <div className={`jarvis-status ${health?.ready ? 'ready' : ''}`}>
+              <span className="status-light" />
+              {health?.ready ? `${health.engine.toUpperCase()} ONLINE` : health?.has_key ? 'BRAIN OFFLINE' : 'KEY NEEDED'}
             </div>
-            <form onSubmit={(event) => void submit(event)} className="flex gap-2">
-              <input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder={online ? 'Type a request for JARVIS…' : 'Waiting for JARVIS core…'}
-                aria-label="Request"
-                disabled={online !== true}
-                className="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm outline-none"
-                style={{
-                  background: 'var(--color-bg-secondary)',
-                  border: '1px solid var(--color-border)',
-                  color: 'var(--color-text)',
-                }}
-              />
-              <button
-                type="submit"
-                className="jarvis-button jarvis-button--primary"
-                disabled={online !== true || !draft.trim() || busy !== null}
-                aria-label="Send"
-              >
-                <SendHorizontal size={15} />
-              </button>
-            </form>
-          </section>
-        </div>
+            <button className="icon-button" type="button" title="Clear conversation" onClick={() => void wipe()}><Trash2 size={16} /></button>
+            <button className="icon-button" type="button" title="Settings" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button>
+          </div>
+        </header>
 
-        <aside className="min-w-0">
-          <StatsPanel status={status} />
-        </aside>
+        {settingsOpen ? (
+          <div className="jarvis-content"><SettingsPanel onClose={() => setSettingsOpen(false)} /></div>
+        ) : (
+          <>
+            <section className="jarvis-hero">
+              <ArcReactor state={voiceState} level={levelRef.current} onClick={() => voiceState === 'listening' || voiceState === 'hearing' ? stopVoice() : void startVoice()} />
+              <div className="mt-10 w-full max-w-lg">
+                <VoiceVisualizer state={voiceState} levelRef={levelRef} />
+              </div>
+              <div className="mt-2 text-[10px] tracking-[0.3em] uppercase" style={{ color: 'var(--jarvis-cyan-dim)' }}>
+                {health?.engine === 'ollama' ? `LOCAL · ${health.model}` : `CLOUD · ${health?.model ?? 'GEMINI'}`}
+              </div>
+            </section>
+            <ChatPanel messages={messages} draft={draft} thinking={thinking} />
+            <footer className="jarvis-footer">
+              {error && <div className="jarvis-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss"><X size={14} /></button></div>}
+              <form className="jarvis-compose" onSubmit={submit}>
+                <button
+                  type="button"
+                  className={`mic-button ${voiceState !== 'idle' ? 'active' : ''}`}
+                  title={voiceState === 'idle' ? 'Start voice listening' : 'Stop listening'}
+                  onClick={() => voiceState === 'listening' || voiceState === 'hearing' ? stopVoice() : void startVoice()}
+                >{voiceState === 'idle' ? <Mic size={19} /> : <MicOff size={19} />}</button>
+                <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask JARVIS anything…" aria-label="Message JARVIS" />
+                <button className="send-button" type="submit" disabled={!input.trim() || thinking} aria-label="Send"><ArrowUp size={18} /></button>
+              </form>
+              <div className="jarvis-footnote">CTRL + ALT + J TO SUMMON · YOUR DATA STAYS ON THIS PC</div>
+            </footer>
+          </>
+        )}
       </div>
-    </div>
+    </main>
   );
 }

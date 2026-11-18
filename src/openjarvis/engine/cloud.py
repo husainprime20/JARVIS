@@ -404,10 +404,30 @@ def _convert_tools_to_anthropic(
     return result
 
 
+def _google_compatible_schema(schema: Any) -> Any:
+    """Return a Gemini-compatible copy of a JSON Schema tool parameter schema.
+
+    Gemini's function-declaration Schema type is not full JSON Schema and
+    rejects ``additionalProperties`` (as well as the snake_case spelling
+    ``additional_properties`` that can enter schemas from Pydantic/OpenAI
+    adapters). Strip those keywords recursively while preserving every
+    supported property, required field, and nested schema.
+    """
+    if isinstance(schema, dict):
+        return {
+            key: _google_compatible_schema(value)
+            for key, value in schema.items()
+            if key not in {"additionalProperties", "additional_properties"}
+        }
+    if isinstance(schema, list):
+        return [_google_compatible_schema(value) for value in schema]
+    return schema
+
+
 def _convert_tools_to_google(
     openai_tools: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Convert OpenAI function-calling tools to Google function declarations."""
+    """Convert OpenAI function-calling tools to Gemini-compatible declarations."""
     declarations = []
     for tool in openai_tools:
         func = tool.get("function", {})
@@ -415,7 +435,7 @@ def _convert_tools_to_google(
             {
                 "name": func.get("name", ""),
                 "description": func.get("description", ""),
-                "parameters": func.get("parameters", {}),
+                "parameters": _google_compatible_schema(func.get("parameters", {})),
             }
         )
     return declarations
