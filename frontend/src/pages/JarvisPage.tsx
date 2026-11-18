@@ -209,7 +209,7 @@ export function JarvisPage() {
           <div className="flex items-center gap-2">
             <div className={`jarvis-status ${health?.ready ? 'ready' : ''}`}>
               <span className="status-light" />
-              {health?.ready ? `${health.engine.toUpperCase()} ONLINE` : 'KEY NEEDED'}
+              {health?.ready ? `${health.engine.toUpperCase()} ONLINE` : health?.has_key ? 'BRAIN OFFLINE' : 'KEY NEEDED'}
             </div>
             <button className="icon-button" type="button" title="Clear conversation" onClick={() => void wipe()}><Trash2 size={16} /></button>
             <button className="icon-button" type="button" title="Settings" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button>

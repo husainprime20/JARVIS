@@ -154,18 +154,51 @@ async fn health() -> Health {
             .timeout(std::time::Duration::from_secs(2))
             .build()
         {
-            Ok(client) => client
-                .get(format!("{host}/api/tags"))
-                .send()
-                .await
-                .map(|response| response.status().is_success())
-                .unwrap_or(false),
+            Ok(client) => match client.get(format!("{host}/api/tags")).send().await {
+                Ok(response) if response.status().is_success() => match response.json::<serde_json::Value>().await {
+                    Ok(value) => value
+                        .get("models")
+                        .and_then(|models| models.as_array())
+                        .map(|models| models.iter().any(|item| {
+                            item.get("name").and_then(|name| name.as_str()) == Some(settings.ollama_model.as_str())
+                        }))
+                        .unwrap_or(false),
+                    Err(_) => false,
+                },
+                _ => false,
+            },
             Err(_) => false,
         };
         (settings.ollama_model.clone(), true, ready)
     } else {
-        let has = store::first_key(&["GEMINI_API_KEY", "GOOGLE_API_KEY"]).is_some();
-        (settings.gemini_model.clone(), has, has)
+        let key = store::first_key(&["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
+        let model = if settings.gemini_model.trim().is_empty() {
+            "gemini-3.5-flash-lite"
+        } else {
+            settings.gemini_model.trim()
+        };
+        let ready = if let Some(key) = key.as_deref().filter(|_| {
+            model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        }) {
+            match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(4))
+                .build()
+            {
+                Ok(client) => client
+                    .get(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}"))
+                    .query(&[("key", key)])
+                    .send()
+                    .await
+                    .map(|response| response.status().is_success())
+                    .unwrap_or(false),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        (model.to_string(), key.is_some(), ready)
     };
     Health { engine, model, has_key, ready }
 }
