@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import { Eye, EyeOff, KeyRound, Loader2, Trash2 } from 'lucide-react';
 import {
   friendlyError,
+  forgetMemory,
   getKeyStatus,
+  getMemory,
   getSettings,
   removeApiKey,
+  runTool,
   saveSettings,
   setApiKey,
   type KeyStatus,
@@ -30,6 +33,9 @@ const GEMINI_MODELS = [
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [keys, setKeys] = useState<KeyStatus[]>([]);
+  const [memories, setMemories] = useState<[string, string][]>([]);
+  const [memoryKey, setMemoryKey] = useState('');
+  const [memoryValue, setMemoryValue] = useState('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [visible, setVisible] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
@@ -38,9 +44,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
   const refresh = async () => {
     try {
-      const [s, k] = await Promise.all([getSettings(), getKeyStatus()]);
+      const [s, k, m] = await Promise.all([getSettings(), getKeyStatus(), getMemory()]);
       setSettings(s);
       setKeys(k);
+      setMemories(m);
     } catch (e) {
       setError(friendlyError(e));
     }
@@ -92,6 +99,39 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       await removeApiKey(slot);
       setMessage('Key removed.');
       await refresh();
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addMemory = async () => {
+    const key = memoryKey.trim();
+    const value = memoryValue.trim();
+    if (!key || !value) return;
+    setBusy(true);
+    setError('');
+    try {
+      await runTool('remember', { key, value });
+      setMemoryKey('');
+      setMemoryValue('');
+      setMemories(await getMemory());
+      setMessage('Memory saved on this PC.');
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeMemory = async (key: string) => {
+    setBusy(true);
+    setError('');
+    try {
+      await forgetMemory(key);
+      setMemories(await getMemory());
+      setMessage('Memory forgotten.');
     } catch (e) {
       setError(friendlyError(e));
     } finally {
@@ -389,6 +429,28 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               className="h-4 w-4"
             />
           </label>
+        </section>
+
+        {/* Local memory */}
+        <section className="mt-8">
+          <h3 className="mb-2 text-xs font-semibold tracking-[0.25em] uppercase" style={{ color: 'var(--jarvis-cyan-dim)' }}>
+            Remembered facts
+          </h3>
+          <p className="mb-3 text-xs" style={{ color: 'var(--jarvis-cyan-dim)' }}>
+            Stored only in this app’s local data folder. Add facts JARVIS should use in future chats.
+          </p>
+          <div className="grid gap-2 sm:grid-cols-[1fr_2fr_auto]">
+            <input value={memoryKey} onChange={(e) => setMemoryKey(e.target.value)} placeholder="Label" aria-label="Memory label" className="rounded-lg px-3 py-2 text-sm" style={{ background: 'rgba(8,47,73,0.4)', border: '1px solid rgba(56,189,248,0.25)', color: '#e0f2fe' }} />
+            <input value={memoryValue} onChange={(e) => setMemoryValue(e.target.value)} placeholder="Fact to remember" aria-label="Memory fact" className="rounded-lg px-3 py-2 text-sm" style={{ background: 'rgba(8,47,73,0.4)', border: '1px solid rgba(56,189,248,0.25)', color: '#e0f2fe' }} />
+            <button type="button" disabled={busy || !memoryKey.trim() || !memoryValue.trim()} onClick={() => void addMemory()} className="rounded-lg px-3 py-2 text-xs font-semibold uppercase disabled:opacity-40" style={{ background: 'var(--jarvis-cyan)', color: '#082f49' }}>Save</button>
+          </div>
+          {memories.length > 0 && <ul className="mt-3 divide-y" style={{ borderColor: 'rgba(56,189,248,0.15)' }}>
+            {memories.map(([key, value]) => <li key={key} className="flex items-start justify-between gap-3 py-2 text-sm" style={{ color: '#e0f2fe' }}>
+              <span><strong>{key}:</strong> {value}</span>
+              <button type="button" disabled={busy} onClick={() => void removeMemory(key)} aria-label={`Forget ${key}`} className="shrink-0 text-xs uppercase disabled:opacity-40" style={{ color: '#fca5a5' }}>Forget</button>
+            </li>)}
+          </ul>}
+          {memories.length === 0 && <p className="mt-3 text-xs" style={{ color: 'var(--jarvis-cyan-dim)' }}>Nothing saved yet.</p>}
         </section>
       </div>
     </div>
