@@ -118,6 +118,18 @@ pub fn declarations() -> Value {
             "parameters": { "type": "OBJECT", "properties": {} }
         },
         {
+            "name": "system_control",
+            "description": "Control common media and volume keys, or lock the screen. This only uses a fixed set of safe system actions.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": { "type": "STRING", "enum": ["volume_up", "volume_down", "mute", "play_pause", "next_track", "previous_track", "lock_screen"] },
+                    "steps": { "type": "INTEGER", "description": "Optional volume step count, from 1 to 10." }
+                },
+                "required": ["action"]
+            }
+        },
+        {
             "name": "get_weather",
             "description": "Get the current weather for a city.",
             "parameters": {
@@ -219,6 +231,7 @@ pub async fn execute(name: &str, args: &Value) -> String {
             )
         }
         "system_stats" => system_stats(),
+        "system_control" => system_control(&arg(args, "action"), args.get("steps").and_then(Value::as_i64).unwrap_or(1)),
         "get_weather" => get_weather(&arg(args, "city")).await,
         "web_search" => web_search(&arg(args, "query")).await,
         "calculator" => calculator(&arg(args, "expression")),
@@ -249,6 +262,61 @@ pub async fn execute(name: &str, args: &Value) -> String {
             }
         }
         _ => format!("Unknown tool: {name}"),
+    }
+}
+
+fn system_control(action: &str, steps: i64) -> String {
+    if action == "lock_screen" {
+        return match Command::new("rundll32.exe")
+            .args(["user32.dll,LockWorkStation"])
+            .spawn()
+        {
+            Ok(_) => "Locked the screen.".to_string(),
+            Err(e) => format!("I couldn't lock the screen: {e}"),
+        };
+    }
+    let key: u32 = match action {
+        "volume_up" => 0xAF,
+        "volume_down" => 0xAE,
+        "mute" => 0xAD,
+        "play_pause" => 0xB3,
+        "next_track" => 0xB0,
+        "previous_track" => 0xB1,
+        _ => return "That system action is not supported.".to_string(),
+    };
+    #[cfg(windows)]
+    {
+        let times = if matches!(action, "volume_up" | "volume_down") {
+            steps.clamp(1, 10)
+        } else {
+            1
+        };
+        // Fixed virtual-key values only; no model-supplied text is interpreted
+        // as a command or script. This mirrors JARVIS's bounded media controls.
+        let script = format!(
+            "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class JarvisKeys {{ [DllImport(\"user32.dll\")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra); }}'; for ($i=0; $i -lt {times}; $i++) {{ [JarvisKeys]::keybd_event({key}, 0, 0, [UIntPtr]::Zero); [JarvisKeys]::keybd_event({key}, 0, 2, [UIntPtr]::Zero) }}"
+        );
+        return match Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+        {
+            Ok(output) if output.status.success() => match action {
+                "volume_up" => format!("Turned the volume up {times} step(s)."),
+                "volume_down" => format!("Turned the volume down {times} step(s)."),
+                "mute" => "Toggled mute.".to_string(),
+                "play_pause" => "Toggled media playback.".to_string(),
+                "next_track" => "Skipped to the next track.".to_string(),
+                "previous_track" => "Went to the previous track.".to_string(),
+                _ => unreachable!(),
+            },
+            Ok(output) => format!("Windows could not perform that system action: {}", String::from_utf8_lossy(&output.stderr).trim()),
+            Err(e) => format!("I couldn't control the system media keys: {e}"),
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (key, steps);
+        "System media controls are currently supported on Windows only.".to_string()
     }
 }
 
