@@ -70,6 +70,10 @@ export async function clearHistory(): Promise<void> {
   return invoke<void>('clear_history');
 }
 
+export async function getHistory(): Promise<ChatMessage[]> {
+  return invoke<ChatMessage[]>('get_history');
+}
+
 export async function getSettings(): Promise<Settings> {
   return invoke<Settings>('get_settings');
 }

@@ -9,8 +9,8 @@ and a global hotkey. Press **Ctrl+Alt+J** from any app to bring JARVIS forward.
 1. Install and open the JARVIS Windows app.
 2. Open **Settings** → **API keys** and paste a free Gemini key from
    <https://aistudio.google.com/api-keys>.
-3. Keep **Cloud API key** selected (the default). JARVIS uses Gemini Flash and
-   does not download or start a local model. Your key is stored in Windows
+3. Keep **Cloud API key** selected (the default). JARVIS uses Gemini Flash Lite
+   and does not download or start a local model. Your key is stored in Windows
    Credential Manager and is only sent to Google's Gemini API when you chat.
 4. Press the microphone button, allow microphone access, say a request, then
    press it again to finish if the WebView uses its recording fallback. You can
@@ -31,12 +31,7 @@ Ollama chat option does not provide local speech recognition.
 
 ## What JARVIS can do
 
-Ask it to open supported Windows apps, open a website, search YouTube or the
-web, calculate arithmetic, check weather, report the time and PC stats, or
-remember/recall a fact. JARVIS uses model function-calling to choose tools and
-reports errors rather than pretending an action succeeded. Saved memory and
-settings stay in the app-data folder; API keys stay in Windows Credential
-Manager.
+Ask it to open installed Windows apps (resolved from Start Menu shortcuts), open a website, search YouTube or the web, calculate arithmetic, check weather, report the time and PC stats, control volume/media playback, lock the screen, or remember/recall a fact. JARVIS uses model function-calling to choose tools and reports errors rather than pretending an action succeeded. The most recent 20 chat turns and saved memory/settings are stored locally in the app-data folder; API keys stay in Windows Credential Manager.
 
 ## Choose a brain
 

@@ -4,7 +4,7 @@ import { ArcReactor, type ReactorPhase } from '../components/Jarvis/ArcReactor';
 import { ChatPanel } from '../components/Jarvis/ChatPanel';
 import { SettingsPanel } from '../components/Jarvis/SettingsPanel';
 import { VoiceVisualizer } from '../components/Jarvis/VoiceVisualizer';
-import { chat, clearHistory, friendlyError, getHealth, getSettings, isDesktop, transcribeAudio, type ChatMessage, type Health } from '../lib/jarvis/api';
+import { chat, clearHistory, friendlyError, getHealth, getHistory, getSettings, isDesktop, transcribeAudio, type ChatMessage, type Health } from '../lib/jarvis/api';
 import { JarvisVoice, speechSupported, type VoiceState } from '../lib/jarvis/voice';
 
 export function describePhase(phase: ReactorPhase, options: { wakeWord?: string; awake?: boolean; requireWakeWord?: boolean; calibrating?: boolean; connecting?: boolean } = {}): string {
@@ -32,7 +32,10 @@ export function JarvisPage() {
   const busyRef = useRef(false);
 
   useEffect(() => {
-    if (isDesktop()) void getHealth().then(setHealth).catch(() => {});
+    if (isDesktop()) {
+      void getHealth().then(setHealth).catch(() => {});
+      void getHistory().then(setMessages).catch(() => {});
+    }
     const timer = window.setInterval(() => {
       if (isDesktop()) void getHealth().then(setHealth).catch(() => {});
     }, 12000);

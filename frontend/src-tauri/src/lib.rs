@@ -95,6 +95,13 @@ async fn transcribe_audio(audio_base64: String, mime_type: String) -> Result<Str
     brain::transcribe_audio(&audio_base64, &mime_type).await
 }
 
+/// Return the local conversation so the redesigned UI can resume after restart.
+#[tauri::command]
+fn get_history(state: tauri::State<'_, Mutex<Session>>) -> Result<Vec<brain::Message>, String> {
+    let session = state.lock().map_err(|_| "JARVIS is busy.".to_string())?;
+    Ok(session.history.clone())
+}
+
 /// Clear the in-memory conversation.
 #[tauri::command]
 fn clear_history(state: tauri::State<'_, Mutex<Session>>) -> Result<(), String> {
@@ -292,6 +299,7 @@ pub fn run() {
             chat,
             transcribe_audio,
             clear_history,
+            get_history,
             get_settings,
             save_settings,
             set_api_key,
